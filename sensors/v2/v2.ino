@@ -18,10 +18,8 @@
 // Debug mode
 bool DEBUG = false;
 
-#define SLEEPING1
-
 // Node and network config
-#define NODEID        201    // The ID of this node (must be different for every node on network)
+#define NODEID        201   // The ID of this node (must be different for every node on network)
 #define NETWORKID     100  // The network ID
 #define GATEWAYID     1    // Where to send sensor data
 #define CONFIGID      101  // Where to send config data
@@ -168,16 +166,16 @@ void loop() {
 //===================================================
 
 void sleepTime() {
-  if (mode == MODE_NORMAL) {
-    if (DEBUG) Serial.println("Going to sleep");
-    radio.sleep();
-    #ifdef SLEEPing0
+ if (mode == MODE_NORMAL) {
+    if (DEBUG) {
+      Serial.println("Going to sleep");
+      delay(TRANSMITPERIOD);
+    } else {
+      radio.sleep();
       Watchdog.sleep(TRANSMITPERIOD);
-    #else
-      delay(3000);
-    #endif
+    }
   } else {
-    //Watchdog.sleep(200);
+     delay(1000);
   }
 }
 
