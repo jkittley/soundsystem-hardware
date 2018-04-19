@@ -1,4 +1,4 @@
-# Sound System
+# Sound System - RFM69 to BLE Gateway
 As part of the system architecture it is necessary for a smartphone / tablet application to inspect the data outputted by individual nodes. As RFM69 radios are not currently integrated into smart phones it was necessary to develop an interfacing node to act as a relay, passing packets from the RFM69 to the smart phone via BLE and returning messages in the same manner. 
 
 ## Wiring

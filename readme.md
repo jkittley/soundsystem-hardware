@@ -1,4 +1,4 @@
-# Sound System
+# Sound System - Hardware
 This repository is part of a larger project which brings together Raspberry PI's, SDStore, Arduino style microcontrollers, Smart phones, BLE and RFM69 radios, to create a sound level monitoring local area sensor network. In this repository you will find microcontroller code for both testing and deployment network nodes. For more information see kittley.com.
 
 ## Nodes
