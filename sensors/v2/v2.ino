@@ -16,14 +16,14 @@
 #include <I2S.h>                // Included with Arduino IDE
 
 // Debug mode
-bool DEBUG = false;
+bool DEBUG = true;
 
 // Node and network config
-#define NODEID        201   // The ID of this node (must be different for every node on network)
+#define NODEID        200   // The ID of this node (must be different for every node on network)
 #define NETWORKID     100  // The network ID
 #define GATEWAYID     1    // Where to send sensor data
 #define CONFIGID      101  // Where to send config data
-int TRANSMITPERIOD  = 1000; // Transmission interval in ms e.g. 5000 = every 5 seconds 
+int TRANSMITPERIOD  = 8000; // Transmission interval in ms e.g. 5000 = every 5 seconds 
 int CONFIGPERIOD    = 15000; // Time can be in config mode without ack
 int dest = GATEWAYID;
 
@@ -104,7 +104,7 @@ int samples[SAMPLES];
 void setup() {
   Serial.begin(SERIAL_BAUD);
   
- //vo if (DEBUG) { while (!Serial) { ; } }
+ //if (DEBUG) { while (!Serial) { ; } }
   
   pinMode(modeLedPin, OUTPUT);
   pinMode(modeButtonPin, INPUT); 
@@ -131,6 +131,10 @@ void setup() {
   SYSCTRL->DFLLCTRL.bit.RUNSTDBY=1; 
   SYSCTRL->VREG.bit.RUNSTDBY=1;
 
+  getSoundPressure();
+  getSoundPressure();
+  getSoundPressure();
+  
   // Debug
   if (DEBUG) printDebugInfo();
 }
@@ -311,8 +315,6 @@ void sendReading() {
   } else {
     if (DEBUG) Serial.println(" No Acknoledgment after retries");
   }
-  //Watchdog.sleep(2000);
-  //delay(500);
 }
 
 //===================================================
@@ -428,8 +430,8 @@ float getSoundPressure() {
       tries--;
     }
 
-    if (tries <= 0) // restart MC if no samples
-      NVIC_SystemReset();
+    //if (tries <= 0) // restart MC if no samples
+    //  NVIC_SystemReset();
     // convert to 18 bit signed
     sample >>= 14; 
     samples[i] = sample;
