@@ -16,15 +16,15 @@
 #include <I2S.h>                // Included with Arduino IDE
 
 // Debug mode
-bool DEBUG = true;
+bool DEBUG = false;
 
 // Node and network config
-#define NODEID        200   // The ID of this node (must be different for every node on network)
+#define NODEID        210   // The ID of this node (must be different for every node on network)
 #define NETWORKID     100  // The network ID
 #define GATEWAYID     1    // Where to send sensor data
 #define CONFIGID      101  // Where to send config data
 int TRANSMITPERIOD  = 8000; // Transmission interval in ms e.g. 5000 = every 5 seconds 
-int CONFIGPERIOD    = 15000; // Time can be in config mode without ack
+int CONFIGPERIOD    = 5000;//15000 // Time can be in config mode without ack
 int dest = GATEWAYID;
 
 #define NUM_RETRYS    3    // How many times to retry sending a message
@@ -91,7 +91,7 @@ int mode = MODE_NORMAL;
 int modeButtonPin = A3;
 int modeLedPin = 11;
 unsigned long modeTimer = 0;
-
+int value = 0;
 // Mic
 #define SAMPLES 1024//2048
 #define ADC_SOUND_REF 65
@@ -134,6 +134,8 @@ void setup() {
   getSoundPressure();
   getSoundPressure();
   getSoundPressure();
+
+  attachInterrupt(digitalPinToInterrupt(modeButtonPin), onButtonChange, HIGH);
   
   // Debug
   if (DEBUG) printDebugInfo();
@@ -176,16 +178,29 @@ void sleepTime() {
       delay(TRANSMITPERIOD);
     } else {
       radio.sleep();
-      Watchdog.sleep(TRANSMITPERIOD);
+      int sleep_time = 0;
+      while (sleep_time < 30000)
+      {
+        sleep_time += Watchdog.sleep();
+        if (mode == MODE_CONFIG) sleep_time = 31000; //leave sleeping if button was pressed
+      }
     }
-  } else {
-     delay(1000);
+  }
+  else {
+    delay(1000);
   }
 }
 
 //===================================================
 // Display the mode of operation i.e. Normal or Debug
 //===================================================
+
+void onButtonChange() {
+   mode = MODE_CONFIG;
+   dest = CONFIGID;
+   modeTimer = millis(); 
+   if (DEBUG) Serial.println("Mode button pressed");
+}
 
 void indicateModeStatus() {
   if (mode == MODE_NORMAL) {
@@ -274,8 +289,6 @@ void listenForMessages() {
     }
   }  
 }
-
-
 
 //===================================================
 // Sending
@@ -430,8 +443,8 @@ float getSoundPressure() {
       tries--;
     }
 
-    //if (tries <= 0) // restart MC if no samples
-    //  NVIC_SystemReset();
+    if (tries <= 0) // restart MC if no samples
+      NVIC_SystemReset();
     // convert to 18 bit signed
     sample >>= 14; 
     samples[i] = sample;
