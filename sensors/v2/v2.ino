@@ -19,7 +19,7 @@
 bool DEBUG = false;
 
 // Node and network config
-#define NODEID        210   // The ID of this node (must be different for every node on network)
+#define NODEID        215   // The ID of this node (must be different for every node on network)
 #define NETWORKID     100  // The network ID
 #define GATEWAYID     1    // Where to send sensor data
 #define CONFIGID      101  // Where to send config data
@@ -175,14 +175,18 @@ void sleepTime() {
  if (mode == MODE_NORMAL) {
     if (DEBUG) {
       Serial.println("Going to sleep");
+      getReading(0);getReading(1);getReading(2);
       delay(TRANSMITPERIOD);
     } else {
       radio.sleep();
       int sleep_time = 0;
-      while (sleep_time < 30000)
+      int reading_nr = 0;
+      while (sleep_time < 30000 || reading_nr < 3)
       {
         sleep_time += Watchdog.sleep();
-        if (mode == MODE_CONFIG) sleep_time = 31000; //leave sleeping if button was pressed
+        if (mode == MODE_CONFIG) sleep_time = 31000; // leave sleeping if button was pressed
+        getReading(reading_nr);
+        reading_nr++;
       }
     }
   }
@@ -296,29 +300,34 @@ void listenForMessages() {
 
 // Define payload
 typedef struct {
-  uint8_t volume1;  // Volume
-  uint8_t battery; // Battery voltage
-  uint8_t bla2 = 0;  // 
-  
+  uint8_t volume1[3]; // Volume
+  uint8_t battery;    // Battery voltage
+  uint8_t bla2 = 0;   // 
 } Payload;
 Payload payload;
 
+void getReading(int nr)
+{
+  if (DEBUG) Serial.println("Getting readings");
+  
+  // Battery Level
+  payload.battery = (int) getBatteryLevel();
+
+  // Volume 
+  payload.volume1[nr]  = (int) getSoundPressure();
+   
+
+}
 // sendReading
 void sendReading() {
 
-  if (DEBUG) Serial.println("Getting readings");
-  
-  // Battery Level - multiplied by 100 to get precision as int, must be divided by 100 on the other end (hacky but works)
-  payload.battery = (int)   getBatteryLevel();
-
-  // Volume 
-  payload.volume1  = (int) getSoundPressure(); 
-  
   // Print payload
   if (DEBUG) {
     Serial.print("Sending payload ("); Serial.print(sizeof(payload)); Serial.print(" bytes) to node: "); Serial.println(dest);
     Serial.print(" - Battery="); Serial.print(payload.battery);
-    Serial.print(" - Volume="); Serial.print(payload.volume1);
+    Serial.print(" - Volume1="); Serial.print(payload.volume1[0]);
+    Serial.print(" - Volume2="); Serial.print(payload.volume1[1]);
+    Serial.print(" - Volume3="); Serial.print(payload.volume1[2]);
     Serial.println(")");
   }
   // Send payload
