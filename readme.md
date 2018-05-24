@@ -7,6 +7,7 @@ Below are links to the various hardware setups and their respective readme files
 * [Sensor Node Version 1](sensors/)
 * [RFM69 to BLE Node](rfm69_ble/)
 * [Node test code](for_testing/)
+* [Code used for Lab Study in Paper](labStudy/)
 
 ## Example Node
 ![Example of Node](_res/v1.jpg)
