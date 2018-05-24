@@ -16,7 +16,7 @@
 #include "BluefruitConfig.h"
 
 // Debug mode
-bool DEBUG = true;
+bool DEBUG = true; // Auto set to false if no serial connection after a few seconds
 
 // Node and network config
 #define NODEID        101  // The ID of this node (must be different for every node on network)
@@ -30,7 +30,7 @@ bool DEBUG = true;
 #define FREQUENCY      RF69_433MHZ //RF69_868MHZ // RF69_915MHZ
 
 // An encryption key. Must be the same 16 characters on all nodes. Comment out to disable
-#define ENCRYPTKEY    "sampleEncryptKey"
+//#define ENCRYPTKEY    "sampleEncryptKey"
 
 // Uncomment if this board is the RFM69HW/HCW not the RFM69W/CW
 #define IS_RFM69HW_HCW
@@ -94,12 +94,20 @@ Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_
 //===================================================
 
 void setup() {
+
+  // Detect serial port coinnection and enable debug
   Serial.begin(SERIAL_BAUD);
-
-  while (!Serial) {
-   ;
+  int start = millis();
+  while (!Serial) { 
+    int remianing = (10000 - (millis() - start)) / 1000;
+    if (remianing < 1) {
+      DEBUG=false;
+      break;  
+    }
+    delay(100);
   }
-
+  if (DEBUG) Serial.println("Serial Started");
+  
   // Init BLE
   initBLE();
   
@@ -125,10 +133,14 @@ void setup() {
 
 void loop() {
 
+  // Wait For BLE Connection
+  waitForBLE();
+  
   // Listen for messages from gateway
-  listenToRFM69();
+  //listenToRFM69();
 
   listenToBLE();
+  //testBLE();
   
   // Sleep
   sleepTime();
@@ -139,8 +151,8 @@ void loop() {
 //===================================================
 
 void sleepTime() {
-  if (DEBUG) Serial.println("Sleeping...");
-  delay(1000);
+  //if (DEBUG) Serial.println("Sleeping...");
+  delay(50);
 }
 
 //===================================================
@@ -149,29 +161,33 @@ void sleepTime() {
 
 // Define payload
 typedef struct {
-  uint8_t battery; // Battery voltage
   uint8_t volume;  // Volume
+  uint8_t battery; // Battery voltage
+  uint8_t rssi;    // rssi
 } Payload;
 Payload payload;
 
 // Listen
 void listenToRFM69() { 
-
     if (radio.receiveDone()) {
 
+      // Ingnore messages from Gateway
+      if (radio.SENDERID == GATEWAYID) {
+        return;
+      }
+      
       if (DEBUG) {
-        Serial.print('[sender: '); Serial.print(radio.SENDERID, DEC); Serial.println("] ");
+        Serial.print("[sender: "); Serial.print(radio.SENDERID); Serial.println("] ");
         Serial.print("Data length: "); Serial.println(radio.DATALEN);
         Serial.print("[RX_RSSI:"); Serial.print(radio.RSSI); Serial.println("]");
       }
-
+      
       if (radio.DATALEN != sizeof(Payload)) {
-        if (DEBUG) Serial.print("# Invalid update received, not matching Payload struct. -- ");
+        if (DEBUG) Serial.println("# Invalid payload received, not matching Payload struct. -- ");
       } else {    
         payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
         if (radio.ACKRequested()) { radio.sendACK(); }
-      
-        sendToPayloadBLE();
+        sendPayloadToBLE();
       }
     }
 }
@@ -292,7 +308,6 @@ void listenToBLE() {
     int c = ble.read();
     key.concat(char(c));
   }
-
   if (msgToSend) {
     if (DEBUG) { Serial.println(String(key)); }
     
@@ -303,15 +318,21 @@ void listenToBLE() {
     } else {
       if (DEBUG) Serial.println(" No Acknoledgment after retries");
     }
-
   }
-  
 }
 
-void sendToPayloadBLE() {
-    if (DEBUG) Serial.print("Forwarding to BLE");
+void testBLE() {
+  payload.battery = random(0,6);
+  payload.rssi    = random(0,6);
+  payload.volume  = random(0,6);
+  sendPayloadToBLE();
+}
+
+void sendPayloadToBLE() {
+    
+    if (DEBUG) Serial.print("Forwarding to BLE");    
     if (ble.isConnected()) {
-      String s = "data="+String(payload.battery)+","+String(payload.volume)+",0";
+      String s = "data="+String(payload.rssi)+","+String(payload.volume)+","+String(payload.battery)+","+String(getBatteryLevel())+",0";
       // Send input data to host via Bluefruit
       ble.print(s);
       if (DEBUG) Serial.println(s);
@@ -335,9 +356,14 @@ void initBLE() {
   ble.echo(false);
   //ble.info();
   ble.verbose(false);  
+}
 
-  /* Wait for connection */
-  if (DEBUG) Serial.println("Waiting foir BLE connection");
+void waitForBLE() {
+
+  if (ble.isConnected()) return;
+  
+   /* Wait for connection */
+  if (DEBUG) Serial.println("Waiting for BLE connection");
   while (!ble.isConnected()) {
       delay(500);
   }
