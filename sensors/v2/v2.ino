@@ -16,10 +16,10 @@
 #include <I2S.h>                // Included with Arduino IDE
 
 // Debug mode
-bool DEBUG = false;
+bool DEBUG = true;
 
 // Node and network config
-#define NODEID        215   // The ID of this node (must be different for every node on network)
+#define NODEID        225   // The ID of this node (must be different for every node on network)
 #define NETWORKID     100  // The network ID
 #define GATEWAYID     1    // Where to send sensor data
 #define CONFIGID      101  // Where to send config data
@@ -44,6 +44,7 @@ int dest = GATEWAYID;
 
 // Uncomment to enable auto transmission control - adjusts power to save battery
 // #define ENABLE_ATC
+#define MAX_READINGS 6
 
 // Serial board rate - just used to print debug messages
 #define SERIAL_BAUD   115200
@@ -175,16 +176,20 @@ void sleepTime() {
  if (mode == MODE_NORMAL) {
     if (DEBUG) {
       Serial.println("Going to sleep");
-      getReading(0);getReading(1);getReading(2);
+      for (int i = 0; i < MAX_READINGS; i++)
+      {
+        getReading(i);
+      }      
       delay(TRANSMITPERIOD);
     } else {
       radio.sleep();
-      int sleep_time = 0;
+      int interrupt = 0;
       int reading_nr = 0;
-      while (sleep_time < 30000 || reading_nr < 3)
+      while (interrupt == false && reading_nr < MAX_READINGS)
       {
-        sleep_time += Watchdog.sleep();
-        if (mode == MODE_CONFIG) sleep_time = 31000; // leave sleeping if button was pressed
+        //sleep_time += 
+        Watchdog.sleep(4000);
+        if (mode == MODE_CONFIG) interrupt = true; // leave sleeping if button was pressed
         getReading(reading_nr);
         reading_nr++;
       }
@@ -300,9 +305,8 @@ void listenForMessages() {
 
 // Define payload
 typedef struct {
-  uint8_t volume1[3]; // Volume
+  uint8_t volume1[MAX_READINGS]; // Volume
   uint8_t battery;    // Battery voltage
-  uint8_t bla2 = 0;   // 
 } Payload;
 Payload payload;
 
@@ -314,6 +318,7 @@ void getReading(int nr)
   payload.battery = (int) getBatteryLevel();
 
   // Volume 
+  getSoundPressure();
   payload.volume1[nr]  = (int) getSoundPressure();
    
 
