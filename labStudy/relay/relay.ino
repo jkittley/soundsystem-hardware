@@ -1,0 +1,312 @@
+
+// **********************************************************************************
+// 
+// RFM69 Radio sensor node.
+//                                                       
+// **********************************************************************************
+
+#include <RFM69.h>              // https://www.github.com/lowpowerlab/rfm69
+#include <RFM69_ATC.h>          // https://www.github.com/lowpowerlab/rfm69
+#include <SPI.h>                // Included with Arduino IDE
+#include <ArduinoJson.h>        // https://arduinojson.org/d
+#include <Adafruit_SleepyDog.h> // https://github.com/adafruit/Adafruit_SleepyDog
+#include "Adafruit_BLE.h"
+#include "Adafruit_BluefruitLE_SPI.h"
+#include "Adafruit_BluefruitLE_UART.h"
+#include "BluefruitConfig.h"
+
+bool LOG = false;    // Log data out
+bool DEBUG = false;  // Show debug messages
+
+// Node and network config
+#define NODEID        21    // The ID of this node (must be different for every node on network)
+#define NETWORKID     50   // The network ID
+
+// Are you using the RFM69 Wing? Uncomment if you are.
+#define USING_RFM69_WING 
+
+// The transmision frequency of the baord. Change as needed.
+#define FREQUENCY      RF69_433MHZ //RF69_868MHZ // RF69_915MHZ
+
+// Uncomment if this board is the RFM69HW/HCW not the RFM69W/CW
+#define IS_RFM69HW_HCW
+
+// Serial board rate - just used to print debug messages
+#define SERIAL_BAUD   115200
+
+// **********************************************************************************
+// **********************************************************************************
+//
+// END OF SETTINGS - DO not edit below this line
+//
+// **********************************************************************************
+// **********************************************************************************
+
+// Board and radio specific config - You should not need to edit
+#if defined (__AVR_ATmega32U4__) && defined (USING_RFM69_WING)
+    #define RF69_SPI_CS  10   
+    #define RF69_RESET   11   
+    #define RF69_IRQ_PIN 2 
+    #define RF69_IRQ_NUM digitalPinToInterrupt(RF69_IRQ_PIN) 
+#elif defined (__AVR_ATmega32U4__)
+    #define RF69_RESET    4
+    #define RF69_SPI_CS   8
+    #define RF69_IRQ_PIN  7
+    #define RF69_IRQ_NUM  4
+#elif defined(ARDUINO_SAMD_FEATHER_M0) && defined (USING_RFM69_WING)
+    #define RF69_RESET    11
+    #define RF69_SPI_CS   10
+    #define RF69_IRQ_PIN  6
+    #define RF69_IRQ_NUM  digitalPinToInterrupt(RF69_IRQ_PIN)
+#elif defined(ARDUINO_SAMD_FEATHER_M0)
+    #define RF69_RESET    4
+    #define RF69_SPI_CS   8
+    #define RF69_IRQ_PIN  3
+    #define RF69_IRQ_NUM  3
+#endif
+
+
+RFM69 radio(RF69_SPI_CS, RF69_IRQ_PIN, false, RF69_IRQ_NUM);
+
+#define FACTORYRESET_ENABLE         1
+#define MINIMUM_FIRMWARE_VERSION    "0.6.6"
+#define MODE_LED_BEHAVIOUR          "MODE"
+
+Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
+
+//===================================================
+// Setup
+//===================================================
+
+void setup() {
+
+  // Detect serial port coinnection and enable debug
+  Serial.begin(SERIAL_BAUD);
+  int start = millis();
+  while (!Serial) { 
+    int remianing = (10000 - (millis() - start)) / 1000;
+    if (remianing < 1) {
+      DEBUG=false;
+      break;  
+    }
+    delay(100);
+  }
+  if (DEBUG) Serial.println("Serial Started");
+  
+  // Init BLE
+  initBLE();
+  
+  // Reset the radio
+  resetRadio();
+
+  // Initialize the radio
+  radio.initialize(FREQUENCY,NODEID,NETWORKID);
+  #ifdef IS_RFM69HW_HCW
+    radio.setHighPower(); //must include this only for RFM69HW/HCW!
+  #endif
+  #ifdef ENCRYPTKEY
+    radio.encrypt(ENCRYPTKEY);
+  #endif
+
+  // Debug
+  if (DEBUG) printDebugInfo();
+
+   // Wait for BLE     
+   waitForBLE();
+ 
+}
+
+//===================================================
+// Main loop
+//===================================================
+
+// Define payload
+typedef struct {
+  uint8_t volume;  // Volume
+  uint8_t battery; // Battery voltage
+  uint8_t rssi;    // rssi
+} Payload;
+Payload payload;
+
+void loop() {
+
+   if (radio.receiveDone()) {
+      
+//      if (Serial) {
+//        Serial.print("[sender: "); Serial.print(radio.SENDERID); Serial.println("] ");
+//        Serial.print("Data length: "); Serial.println(radio.DATALEN);
+//        Serial.print("[RX_RSSI:"); Serial.print(radio.RSSI); Serial.println("]");
+//      }
+      
+      if (radio.DATALEN != sizeof(Payload)) {
+        if (Serial) Serial.println("# Invalid payload received, not matching Payload struct. -- ");
+      } else {    
+        payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
+        if (Serial) Serial.println(payload.volume);
+        if (Serial) Serial.println(payload.rssi);
+        
+        // Send to BLE
+        sendPayloadToBLE();
+      }
+    }
+    
+}
+
+void sendPayloadToBLE() {  
+    if (ble.isConnected()) {
+      String s = "data=0,"+String(payload.rssi)+","+String(payload.volume)+",0,0";
+      // Send input data to host via Bluefruit
+      ble.print(s);
+      if (DEBUG) Serial.println(s);
+      delay(250);
+    } 
+}
+
+
+
+
+//===================================================
+// Reset Radio
+//===================================================
+
+// Reset the Radio
+void resetRadio() {
+  if (Serial) Serial.print("Resetting radio...");
+  pinMode(RF69_RESET, OUTPUT);
+  digitalWrite(RF69_RESET, HIGH);
+  delay(20);
+  digitalWrite(RF69_RESET, LOW);
+  delay(500);
+  if (Serial) Serial.println(" complete");
+}
+
+//===================================================
+// Debug Message
+//===================================================
+
+// Print Info
+void printDebugInfo() {
+  Serial.print("I am node: "); Serial.println(NODEID);
+  Serial.print("on network: "); Serial.println(NETWORKID);
+  Serial.println("I am a relay");
+  
+  #if defined (__AVR_ATmega32U4__)
+    Serial.println("AVR ATmega 32U4");
+  #else
+    Serial.println("SAMD FEATHER M0");
+  #endif
+  #ifdef USING_RFM69_WING
+    Serial.println("Using RFM69 Wing: YES");
+  #else
+    Serial.println("Using RFM69 Wing: NO");
+  #endif
+  Serial.print("RF69_SPI_CS: "); Serial.println(RF69_SPI_CS);
+  Serial.print("RF69_IRQ_PIN: "); Serial.println(RF69_IRQ_PIN);
+  Serial.print("RF69_IRQ_NUM: "); Serial.println(RF69_IRQ_NUM);
+  #ifdef ENABLE_ATC
+    Serial.println("RFM69 Auto Transmission Control: Enabled");
+  #else
+    Serial.println("RFM69 Auto Transmission Control: Disabled");
+  #endif
+  #ifdef ENCRYPTKEY
+    Serial.println("Encryption: Enabled");
+  #else
+    Serial.println("Encryption: Disabled");
+  #endif
+  char buff[50];
+  sprintf(buff, "\nListening at %d Mhz...", FREQUENCY==RF69_433MHZ ? 433 : FREQUENCY==RF69_868MHZ ? 868 : 915);
+  Serial.println(buff);
+}
+
+//===================================================
+// Split String
+//===================================================
+
+String getValue(String data, char separator, int index) {
+  int found = 0;
+  int strIndex[] = {0, -1};
+  int maxIndex = data.length()-1;
+  for(int i=0; i<=maxIndex && found<=index; i++){
+    if(data.charAt(i)==separator || i==maxIndex){
+        found++;
+        strIndex[0] = strIndex[1]+1;
+        strIndex[1] = (i == maxIndex) ? i+1 : i;
+    }
+  }
+  return found>index ? data.substring(strIndex[0], strIndex[1]) : "";
+}
+
+//===================================================
+// BLE
+//===================================================
+
+// Define struct for update payload
+typedef struct {
+  char key[20]; // command
+  uint8_t value; // Battery voltage
+} Update;
+Update upd;
+
+void listenToBLE() {
+  String key = "";
+  bool msgToSend = false;
+  while ( ble.available() ) {
+    msgToSend = true;
+    int c = ble.read();
+    key.concat(char(c));
+  }
+  if (msgToSend) {
+    if (DEBUG) { Serial.println(String(key)); }
+    
+    key.toCharArray(upd.key, sizeof(key));
+    
+    if (radio.sendWithRetry(3, (const void*) &upd, sizeof(upd), 3, 500)) {
+      if (DEBUG) Serial.println(" Acknoledgment received!");
+    } else {
+      if (DEBUG) Serial.println(" No Acknoledgment after retries");
+    }
+  }
+}
+
+
+void initBLE() {
+  if (DEBUG) Serial.print(F("Initialising the Bluefruit LE module: "));
+  if (!ble.begin(VERBOSE_MODE) ) {
+    if (DEBUG) Serial.println("Couldn't find Bluefruit, make sure it's in CoMmanD mode & check wiring?");
+  }
+  if ( FACTORYRESET_ENABLE ) {
+    if (DEBUG) Serial.println(F("Performing a factory reset: "));
+    if (!ble.factoryReset()){
+      if (DEBUG) Serial.println("Couldn't factory reset");
+    }
+  }
+  /* Disable command echo from Bluefruit */
+  ble.echo(false);
+  //ble.info();
+  ble.verbose(false);  
+}
+
+void waitForBLE() {
+
+  if (ble.isConnected()) return;
+  
+   /* Wait for connection */
+  if (DEBUG) Serial.println("Waiting for BLE connection");
+  while (!ble.isConnected()) {
+      delay(50);
+  }
+
+  // LED Activity command is only supported from 0.6.6
+  if ( ble.isVersionAtLeast(MINIMUM_FIRMWARE_VERSION) ) {
+    // Change Mode LED Activity
+    if (DEBUG) Serial.println(F("Change LED activity to " MODE_LED_BEHAVIOUR));
+    ble.sendCommandCheckOK("AT+HWModeLED=" MODE_LED_BEHAVIOUR);
+  }
+
+  // Set module to DATA mode
+  if (DEBUG) Serial.println( F("Switching to DATA mode!") );
+  ble.setMode(BLUEFRUIT_MODE_DATA);
+
+  delay(200);
+}
+
