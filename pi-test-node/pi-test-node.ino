@@ -11,10 +11,10 @@
 // **********************************************************************************
 
 
-#define RXID          10 // This device i.e. the receiver of the message from TX
-#define TXID          11 // The ID of the device sending messages
-#define RELAYID       21 // The ID of the RFM69 to BLE Relay node
-#define NETWORKID     50  
+#define RXID          150 // This device i.e. the receiver of the message from TX
+#define TXID          11  // The ID of the device sending messages
+#define RELAYID       100 // The ID of the RFM69 to BLE Relay node
+#define NETWORKID     100  
 
 #define RADIO_POWER   31   // power output ranges from 0 (5dBm) to 31 (20dBm)
 
@@ -30,8 +30,8 @@
 // Serial board rate - just used to print debug messages
 #define SERIAL_BAUD   115200
 
-bool LOG = false;    // Log data out
-bool DEBUG = false;  // Show debug messages
+bool LOG = true;    // Log data out
+bool DEBUG = true;  // Show debug messages
 
 // **********************************************************************************
 // **********************************************************************************

@@ -217,13 +217,13 @@ void loop() {
   }
 
   // Listen for messages from gateway
-  // listenForMessages();
+  listenForMessages();
   
   // Revert to normal if no acks from alternative
-  //autoRevertModeManager();
+  autoRevertModeManager();
   
   // Check for mode button press
-  //checkModeButton();
+  checkModeButton();
   
   // Sleep
   sleepTime();

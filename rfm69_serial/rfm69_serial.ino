@@ -10,20 +10,15 @@
 #include <SPI.h>                // Included with Arduino IDE
 #include <ArduinoJson.h>        // https://arduinojson.org/d
 #include <Adafruit_SleepyDog.h> // https://github.com/adafruit/Adafruit_SleepyDog
-#include "Adafruit_BLE.h"
-#include "Adafruit_BluefruitLE_SPI.h"
-#include "Adafruit_BluefruitLE_UART.h"
-#include "BluefruitConfig.h"
 
-bool LOG = true;    // Log data out
 bool DEBUG = true;  // Show debug messages
 
 // Node and network config
-#define NODEID        21    // The ID of this node (must be different for every node on network)
-#define NETWORKID     50   // The network ID
+#define NODEID        1     // The ID of this node (must be different for every node on network)
+#define NETWORKID     100   // The network ID
 
 // Are you using the RFM69 Wing? Uncomment if you are.
-#define USING_RFM69_WING 
+// #define USING_RFM69_WING 
 
 // The transmision frequency of the baord. Change as needed.
 #define FREQUENCY      RF69_433MHZ //RF69_868MHZ // RF69_915MHZ
@@ -68,39 +63,17 @@ bool DEBUG = true;  // Show debug messages
 
 RFM69 radio(RF69_SPI_CS, RF69_IRQ_PIN, false, RF69_IRQ_NUM);
 
-#define FACTORYRESET_ENABLE         1
-#define MINIMUM_FIRMWARE_VERSION    "0.6.6"
-#define MODE_LED_BEHAVIOUR          "MODE"
-
-Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
-
 //===================================================
 // Setup
 //===================================================
 
 void setup() {
 
-  // Detect serial port coinnection and enable debug
- 
-  if (LOG || DEBUG) { 
-    Serial.begin(SERIAL_BAUD);
-    while (!Serial) { delay(100); }
-  }
+  Serial.begin(SERIAL_BAUD);
+  while (!Serial) { delay(100); }
   
-  int start = millis();
-  while (!Serial) { 
-    int remianing = (10000 - (millis() - start)) / 1000;
-    if (remianing < 1) {
-      DEBUG=false;
-      break;  
-    }
-    delay(100);
-  }
   if (DEBUG) Serial.println("Serial Started");
-  
-  // Init BLE
-  initBLE();
-  
+   
   // Reset the radio
   resetRadio();
 
@@ -108,9 +81,6 @@ void setup() {
   radio.initialize(FREQUENCY,NODEID,NETWORKID);
   #ifdef IS_RFM69HW_HCW
     radio.setHighPower(); //must include this only for RFM69HW/HCW!
-  #endif
-  #ifdef ENCRYPTKEY
-    radio.encrypt(ENCRYPTKEY);
   #endif
 
   // Debug
@@ -132,32 +102,32 @@ Payload payload;
 
 void loop() {
    
-   if (radio.receiveDone()) {
-    
-      if (DEBUG) Serial.println("Message received");
-      
+   if (radio.receiveDone()) {      
       if (radio.DATALEN != sizeof(Payload)) {
         if (DEBUG) Serial.println("# Invalid payload received, not matching Payload struct. -- ");
       } else {    
         payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
-        if (DEBUG) Serial.println(payload.volume);
-        if (DEBUG) Serial.println(payload.rssi);
+        //if (DEBUG) Serial.println(payload.volume);
+        //if (DEBUG) Serial.println(payload.rssi);
         
         // Send to BLE
-        sendPayloadToBLE();
+        sendPayloadToSerial(radio.SENDERID, radio.RSSI);
       }
     }
     
 }
 
-void sendPayloadToBLE() {  
-    if (ble.isConnected()) {
-      String s = "data=0,"+String(payload.rssi)+","+String(payload.volume)+",0,0";
-      // Send input data to host via Bluefruit
-      ble.print(s);
-      if (DEBUG) Serial.println(s);
-      delay(250);
-    } 
+void sendPayloadToSerial(int sender, int rssi) {  
+    StaticJsonBuffer<200> jsonBuffer;
+    JsonObject& root = jsonBuffer.createObject();
+    root["sender"] = sender;
+    root["rssi"]   = rssi;
+    root["pay_volume"]  = payload.volume;
+    root["pay_battery"] = payload.battery;
+    root["pay_rssi"]    = payload.rssi;
+    root.printTo(Serial);
+    Serial.println();
+    delay(250);
 }
 
 //===================================================
@@ -166,13 +136,13 @@ void sendPayloadToBLE() {
 
 // Reset the Radio
 void resetRadio() {
-  if (Serial) Serial.print("Resetting radio...");
+  if (DEBUG) Serial.print("Resetting radio...");
   pinMode(RF69_RESET, OUTPUT);
   digitalWrite(RF69_RESET, HIGH);
   delay(20);
   digitalWrite(RF69_RESET, LOW);
   delay(500);
-  if (Serial) Serial.println(" complete");
+  if (DEBUG) Serial.println(" complete");
 }
 
 //===================================================
@@ -229,66 +199,5 @@ String getValue(String data, char separator, int index) {
     }
   }
   return found>index ? data.substring(strIndex[0], strIndex[1]) : "";
-}
-
-//===================================================
-// BLE
-//===================================================
-
-// Define struct for update payload
-typedef struct {
-  char key[20]; // command
-  uint8_t value; // Battery voltage
-} Update;
-Update upd;
-
-void listenToBLE() {
-  String key = "";
-  bool msgToSend = false;
-  while ( ble.available() ) {
-    msgToSend = true;
-    int c = ble.read();
-    key.concat(char(c));
-  }
-  if (msgToSend) {
-    if (DEBUG) { Serial.println(String(key)); }
-    
-    key.toCharArray(upd.key, sizeof(key));
-    
-    if (radio.sendWithRetry(3, (const void*) &upd, sizeof(upd), 3, 500)) {
-      if (DEBUG) Serial.println(" Acknoledgment received!");
-    } else {
-      if (DEBUG) Serial.println(" No Acknoledgment after retries");
-    }
-  }
-}
-
-
-void initBLE() {
-  if (DEBUG) Serial.print(F("Initialising the Bluefruit LE module: "));
-  if (!ble.begin(VERBOSE_MODE) ) {
-    if (DEBUG) Serial.println("Couldn't find Bluefruit, make sure it's in CoMmanD mode & check wiring?");
-  }
-  if ( FACTORYRESET_ENABLE ) {
-    if (DEBUG) Serial.println(F("Performing a factory reset: "));
-    if (!ble.factoryReset()){
-      if (DEBUG) Serial.println("Couldn't factory reset");
-    }
-  }
-  /* Disable command echo from Bluefruit */
-  ble.echo(false);
-  //ble.info();
-  ble.verbose(false);  
-
-  // LED Activity command is only supported from 0.6.6
-  if ( ble.isVersionAtLeast(MINIMUM_FIRMWARE_VERSION) ) {
-    // Change Mode LED Activity
-    if (DEBUG) Serial.println(F("Change LED activity to " MODE_LED_BEHAVIOUR));
-    ble.sendCommandCheckOK("AT+HWModeLED=" MODE_LED_BEHAVIOUR);
-  }
-
-  // Set module to DATA mode
-  if (DEBUG) Serial.println( F("Switching to DATA mode!") );
-  ble.setMode(BLUEFRUIT_MODE_DATA);
 }
 
