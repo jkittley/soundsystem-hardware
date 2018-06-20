@@ -13,11 +13,19 @@
 
 #define RXID          10 // This device i.e. the receiver of the message from TX
 #define TXID          11 // The ID of the device sending messages
-#define RELAYID       21 // The ID of the RFM69 to BLE Relay node
-#define NETWORKID     50  
-
+#define RELAYID       0 // The ID of the RFM69 to BLE Relay node
+#define CONFIGID      21
+#define NETWORKID     50
 #define RADIO_POWER   31   // power output ranges from 0 (5dBm) to 31 (20dBm)
 
+int CONFIGPERIOD    = 5000;
+
+#define MODE_NORMAL 1
+#define MODE_CONFIG  2
+int mode = MODE_NORMAL;
+int dest = RELAYID;
+unsigned long modeTimer = 0;
+int blueLED = 10;
 // Are you using the RFM69 Wing? Uncomment if you are.
 //#define USING_RFM69_WING 
 
@@ -29,6 +37,8 @@
 
 // Serial board rate - just used to print debug messages
 #define SERIAL_BAUD   115200
+
+int configButton = A3;
 
 bool LOG = false;    // Log data out
 bool DEBUG = false;  // Show debug messages
@@ -77,11 +87,12 @@ bool DEBUG = false;  // Show debug messages
 //===================================================
 
 void setup() {
-  
+  pinMode(configButton, OUTPUT);
+  pinMode(blueLED, OUTPUT);
   //  Wait for Serial
   if (LOG || DEBUG) Serial.begin(SERIAL_BAUD);
   if (LOG || DEBUG) { while (!Serial) { delay(100); } }
-     
+  resetRadio();
   // Initialize the radio
   radio.initialize(FREQUENCY,RXID,NETWORKID);
   #ifdef IS_RFM69HW_HCW
@@ -96,6 +107,7 @@ void setup() {
     if (DEBUG) Serial.println("Failed to initialize I2S!");
     while (1); // do nothing
   }
+  attachInterrupt(digitalPinToInterrupt(configButton), onButtonChange, HIGH);
 }
 
 #define ADC_SOUND_REF 65
@@ -125,19 +137,20 @@ void loop() {
       }
     }
 
-    if (failure_count > 10000) {
+    if (failure_count > 10000) NVIC_SystemReset();  // this works better than below, dont ask!
+    /*{
       if (DEBUG) Serial.print("Resetting Microphone...");
-      NVIC_SystemReset();
-      delay(500);
+      //NVIC_SystemReset();
+      /*delay(500);
       I2S.begin(I2S_PHILIPS_MODE, 16000, 32);
       delay(500);
       failure_count = 0;
-    }
+    } */
     
     if (sample_index < num_samples) {
       
       int sample = I2S.read();
-      delay(20);
+      //delay(20);
       if (sample != 0 && sample != -1) {
         // convert to 18 bit signed
         sample >>= 14; 
@@ -182,16 +195,9 @@ void loop() {
       
       // Send data to relay node
       sendPayload(rssi, dB);
-  
-//      if (DEBUG) Serial.print("Vol dB: "); 
-//      if (LOG) Serial.println(dB); 
-//
-//      if (DEBUG) Serial.print("Sig dB: "); 
-//      if (LOG) Serial.println(rssi); 
-    }
-
+    }  
     
-  
+  RevertMode();
 }
 
 
@@ -228,8 +234,7 @@ void sendPayload(int sig, float db) {
   payload.volume  = (int) round(sendDB); 
   payload.rssi    = (int) round(sendRSSI);
   
-  //radio.send(RELAYID, "SEND Test", sizeof("SEND Test"));
-  radio.send(RELAYID, (const uint8_t*) &payload, sizeof(payload));
+  radio.send(dest, (const uint8_t*) &payload, sizeof(payload));
 }
 
 // Reset the Radio
@@ -241,6 +246,28 @@ void resetRadio() {
   digitalWrite(RF69_RESET, LOW);
   delay(500);
   if (DEBUG) Serial.println(" complete");
+}
+
+
+void onButtonChange() {
+  if (mode != MODE_CONFIG) {
+    analogWrite(blueLED, 50);
+    mode = MODE_CONFIG;
+    dest = CONFIGID;
+    modeTimer = millis(); 
+    if (DEBUG) Serial.println("Mode button pressed");   
+  }
+}
+
+void RevertMode(){
+  if (mode == MODE_CONFIG) {
+    if ((millis() - modeTimer) > CONFIGPERIOD) {
+      if (DEBUG) Serial.println("Auto reverting as timed out");
+      mode = MODE_NORMAL;
+      dest = RELAYID;
+      digitalWrite(blueLED, LOW);
+    }
+  }
 }
 
 
