@@ -15,11 +15,11 @@
 #include "Adafruit_BluefruitLE_UART.h"
 #include "BluefruitConfig.h"
 
-bool LOG = false;    // Log data out
+bool LOG = true;    // Log data out
 bool DEBUG = true;  // Show debug messages
 
 // Node and network config
-#define NODEID        101    // The ID of this node (must be different for every node on network)
+#define NODEID        101   // The ID of this node (must be different for every node on network)
 #define NETWORKID     200   // The network ID
 
 // Are you using the RFM69 Wing? Uncomment if you are.
@@ -74,6 +74,8 @@ RFM69 radio(RF69_SPI_CS, RF69_IRQ_PIN, false, RF69_IRQ_NUM);
 
 Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
 
+int listening_to_node = 0;
+
 //===================================================
 // Setup
 //===================================================
@@ -81,7 +83,12 @@ Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_
 void setup() {
 
   // Detect serial port coinnection and enable debug
-  Serial.begin(SERIAL_BAUD);
+ 
+  if (LOG || DEBUG) { 
+    Serial.begin(SERIAL_BAUD);
+    while (!Serial) { delay(100); }
+  }
+  
   int start = millis();
   while (!Serial) { 
     int remianing = (10000 - (millis() - start)) / 1000;
@@ -96,6 +103,9 @@ void setup() {
   // Init BLE
   initBLE();
   
+  // Reset the radio
+  resetRadio();
+
   // Initialize the radio
   radio.initialize(FREQUENCY,NODEID,NETWORKID);
   #ifdef IS_RFM69HW_HCW
@@ -105,37 +115,174 @@ void setup() {
     radio.encrypt(ENCRYPTKEY);
   #endif
 
-   // Wait for BLE     
-   waitForBLE();
- 
+  // Debug
+  if (DEBUG) printDebugInfo();
+
 }
 
 //===================================================
 // Main loop
 //===================================================
 
+// Define payload
+typedef struct {
+  uint8_t volume;  // Volume
+  uint8_t battery; // Battery voltage
+  uint8_t rssi;    // rssi
+} Payload;
+Payload payload;
+
+unsigned char CHOOSEME[] = "CHOOSEME";
+
 void loop() {
-    // Send to BLE
-    if (ble.isConnected()) {
-      sendPayloadToBLE(random(0,100), random(0,100));
-      delay (500);
-    } else {
-      waitForBLE();
+   
+   if (radio.receiveDone()) {
+    
+      if (DEBUG) Serial.println("Message received");
+
+      if (radio.DATA == CHOOSEME) {
+         if (DEBUG) Serial.println("CHOOSE ME request received");
+         listening_to_node = radio.SENDERID;
+         
+      }else if (radio.DATALEN != sizeof(Payload)) {
+        if (DEBUG) Serial.println("# Invalid payload received, not matching Payload struct. -- ");
+      } else {    
+
+        if (listening_to_node ==  radio.SENDERID) {
+          payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
+          if (DEBUG) Serial.println(payload.volume);
+          if (DEBUG) Serial.println(payload.rssi);
+          
+          // Send to BLE
+          sendPayloadToBLE();
+
+          if (radio.ACKRequested()) {
+            radio.sendACK();
+            Serial.print(" - ACK sent.");
+          }
+      
+        } else {
+          if (DEBUG) Serial.print("Ignoring node");
+          if (DEBUG) Serial.println(radio.SENDERID);
+        }
+        
+      }
     }
+    
 }
 
-void sendPayloadToBLE(int vol, int rssi) {  
-  String s = "data=0,"+String(rssi)+","+String(vol)+",0,0";
-  // Send input data to host via Bluefruit
-  ble.print(s);
-  if (DEBUG) Serial.println(s);
-  delay(250);
+void sendPayloadToBLE() {  
+    if (ble.isConnected()) {
+      String s = "data=0,"+String(payload.rssi)+","+String(payload.volume)+",0,0";
+      // Send input data to host via Bluefruit
+      ble.print(s);
+      if (DEBUG) Serial.println(s);
+    } 
 }
 
+//===================================================
+// Reset Radio
+//===================================================
+
+// Reset the Radio
+void resetRadio() {
+  if (Serial) Serial.print("Resetting radio...");
+  pinMode(RF69_RESET, OUTPUT);
+  digitalWrite(RF69_RESET, HIGH);
+  delay(20);
+  digitalWrite(RF69_RESET, LOW);
+  delay(500);
+  if (Serial) Serial.println(" complete");
+}
+
+//===================================================
+// Debug Message
+//===================================================
+
+// Print Info
+void printDebugInfo() {
+  Serial.print("I am node: "); Serial.println(NODEID);
+  Serial.print("on network: "); Serial.println(NETWORKID);
+  Serial.println("I am a relay");
+  
+  #if defined (__AVR_ATmega32U4__)
+    Serial.println("AVR ATmega 32U4");
+  #else
+    Serial.println("SAMD FEATHER M0");
+  #endif
+  #ifdef USING_RFM69_WING
+    Serial.println("Using RFM69 Wing: YES");
+  #else
+    Serial.println("Using RFM69 Wing: NO");
+  #endif
+  Serial.print("RF69_SPI_CS: "); Serial.println(RF69_SPI_CS);
+  Serial.print("RF69_IRQ_PIN: "); Serial.println(RF69_IRQ_PIN);
+  Serial.print("RF69_IRQ_NUM: "); Serial.println(RF69_IRQ_NUM);
+  #ifdef ENABLE_ATC
+    Serial.println("RFM69 Auto Transmission Control: Enabled");
+  #else
+    Serial.println("RFM69 Auto Transmission Control: Disabled");
+  #endif
+  #ifdef ENCRYPTKEY
+    Serial.println("Encryption: Enabled");
+  #else
+    Serial.println("Encryption: Disabled");
+  #endif
+  char buff[50];
+  sprintf(buff, "\nListening at %d Mhz...", FREQUENCY==RF69_433MHZ ? 433 : FREQUENCY==RF69_868MHZ ? 868 : 915);
+  Serial.println(buff);
+}
+
+//===================================================
+// Split String
+//===================================================
+
+String getValue(String data, char separator, int index) {
+  int found = 0;
+  int strIndex[] = {0, -1};
+  int maxIndex = data.length()-1;
+  for(int i=0; i<=maxIndex && found<=index; i++){
+    if(data.charAt(i)==separator || i==maxIndex){
+        found++;
+        strIndex[0] = strIndex[1]+1;
+        strIndex[1] = (i == maxIndex) ? i+1 : i;
+    }
+  }
+  return found>index ? data.substring(strIndex[0], strIndex[1]) : "";
+}
 
 //===================================================
 // BLE
 //===================================================
+
+// Define struct for update payload
+typedef struct {
+  char key[20]; // command
+  uint8_t value; // Battery voltage
+} Update;
+Update upd;
+
+void listenToBLE() {
+  String key = "";
+  bool msgToSend = false;
+  while ( ble.available() ) {
+    msgToSend = true;
+    int c = ble.read();
+    key.concat(char(c));
+  }
+  if (msgToSend) {
+    if (DEBUG) { Serial.println(String(key)); }
+    
+    key.toCharArray(upd.key, sizeof(key));
+    
+    if (radio.sendWithRetry(3, (const void*) &upd, sizeof(upd), 3, 500)) {
+      if (DEBUG) Serial.println(" Acknoledgment received!");
+    } else {
+      if (DEBUG) Serial.println(" No Acknoledgment after retries");
+    }
+  }
+}
+
 
 void initBLE() {
   if (DEBUG) Serial.print(F("Initialising the Bluefruit LE module: "));
@@ -152,18 +299,6 @@ void initBLE() {
   ble.echo(false);
   //ble.info();
   ble.verbose(false);  
-  //ble.sendCommandCheckOK(F("AT+GAPDEVNAME=SoundSystemRelay"));
-}
-
-void waitForBLE() {
-
-  if (ble.isConnected()) return;
-  
-   /* Wait for connection */
-  if (DEBUG) Serial.println("Waiting for BLE connection");
-  while (!ble.isConnected()) {
-      delay(50);
-  }
 
   // LED Activity command is only supported from 0.6.6
   if ( ble.isVersionAtLeast(MINIMUM_FIRMWARE_VERSION) ) {
@@ -175,7 +310,5 @@ void waitForBLE() {
   // Set module to DATA mode
   if (DEBUG) Serial.println( F("Switching to DATA mode!") );
   ble.setMode(BLUEFRUIT_MODE_DATA);
-
-  delay(200);
 }
 
