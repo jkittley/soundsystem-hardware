@@ -13,19 +13,19 @@
 
 #define RXID          10 // This device i.e. the receiver of the message from TX
 #define TXID          11 // The ID of the device sending messages
-#define RELAYID       0 // The ID of the RFM69 to BLE Relay node
-#define CONFIGID      21
+#define RELAYID       1 // The ID of the RFM69 to BLE Relay node
+#define CONFIGID      21 //21
 #define NETWORKID     50
 #define RADIO_POWER   31   // power output ranges from 0 (5dBm) to 31 (20dBm)
 
-int CONFIGPERIOD    = 5000;
+unsigned long CONFIGPERIOD = 60000;
 
 #define MODE_NORMAL 1
 #define MODE_CONFIG  2
 int mode = MODE_NORMAL;
 int dest = RELAYID;
 unsigned long modeTimer = 0;
-int blueLED = 10;
+int blueLED = 11;
 // Are you using the RFM69 Wing? Uncomment if you are.
 //#define USING_RFM69_WING 
 
@@ -123,11 +123,13 @@ int sample_index = 0;
 int samples[num_samples];
 int failure_count = 0;
 
-int rssi = 0;
+int rssi = 89;
 int last_rssi = millis();
 
 void loop() {
     
+  if(strcmp("ABC", "123") == 0);
+  
     // Listen for messages from gateway
     if (radio.receiveDone()) {
       if (radio.SENDERID == TXID) {
@@ -150,7 +152,6 @@ void loop() {
     if (sample_index < num_samples) {
       
       int sample = I2S.read();
-      //delay(20);
       if (sample != 0 && sample != -1) {
         // convert to 18 bit signed
         sample >>= 14; 
@@ -162,7 +163,7 @@ void loop() {
 
     } else {
       
-      if (DEBUG) Serial.println("Sending");
+      if (DEBUG) Serial.print("Sending ");
       
       float meanval = 0;
       float minsample = 100000;
@@ -189,12 +190,13 @@ void loop() {
       sample_index = 0;
       failure_count = 0;
 
-      if (millis() - last_rssi > 2000) {
-        rssi = 100;
+      if (millis() - last_rssi > 7000) {
+        rssi = 89;
       }
       
       // Send data to relay node
       sendPayload(rssi, dB);
+      //delay(1500); // make this 2000 for wifi study
     }  
     
   RevertMode();
@@ -250,12 +252,12 @@ void resetRadio() {
 
 
 void onButtonChange() {
+  if (DEBUG) Serial.println("Mode button pressed");   
   if (mode != MODE_CONFIG) {
     analogWrite(blueLED, 50);
     mode = MODE_CONFIG;
     dest = CONFIGID;
     modeTimer = millis(); 
-    if (DEBUG) Serial.println("Mode button pressed");   
   }
 }
 
@@ -265,7 +267,7 @@ void RevertMode(){
       if (DEBUG) Serial.println("Auto reverting as timed out");
       mode = MODE_NORMAL;
       dest = RELAYID;
-      digitalWrite(blueLED, LOW);
+      analogWrite(blueLED, 0);
     }
   }
 }
