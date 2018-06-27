@@ -97,21 +97,37 @@ typedef struct {
   uint8_t volume;  // Volume
   uint8_t battery; // Battery voltage
   uint8_t rssi;    // rssi
-} Payload;
-Payload payload;
+} RXPayload;
+RXPayload receivePayload;
+
+// Define payload
+typedef struct {
+  uint8_t volume; // Volume
+  uint8_t rssi;    // rssi
+} TXPayload;
+TXPayload sendPayload;
+
 
 void loop() {
    
    if (radio.receiveDone()) {      
-      if (radio.DATALEN != sizeof(Payload)) {
+      if (radio.DATALEN != sizeof(RXPayload)) {
         if (DEBUG) Serial.println("# Invalid payload received, not matching Payload struct. -- ");
       } else {    
-        payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
+        receivePayload = *(RXPayload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
         //if (DEBUG) Serial.println(payload.volume);
         //if (DEBUG) Serial.println(payload.rssi);
         
         // Send to BLE
         sendPayloadToSerial(radio.SENDERID, radio.RSSI);
+
+        // Send back RSSI
+        sendPayload.volume = receivePayload.volume;
+        sendPayload.rssi = radio.RSSI;
+        if (radio.sendWithRetry(radio.SENDERID, (const uint8_t*) &sendPayload, sizeof(sendPayload))) {
+            if (DEBUG) Serial.println("RSSI outgoing got an ACK");
+        }
+        
       }
     }
     
@@ -122,9 +138,9 @@ void sendPayloadToSerial(int sender, int rssi) {
     JsonObject& root = jsonBuffer.createObject();
     root["sender"] = sender;
     root["rssi"]   = rssi;
-    root["pay_volume"]  = payload.volume;
-    root["pay_battery"] = payload.battery;
-    root["pay_rssi"]    = payload.rssi;
+    root["pay_volume"]  = receivePayload.volume;
+    root["pay_battery"] = receivePayload.battery;
+    root["pay_rssi"]    = receivePayload.rssi;
     root.printTo(Serial);
     Serial.println();
     delay(250);

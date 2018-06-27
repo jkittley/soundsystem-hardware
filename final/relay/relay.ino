@@ -19,8 +19,8 @@ bool LOG = true;    // Log data out
 bool DEBUG = true;  // Show debug messages
 
 // Node and network config
-#define NODEID        21    // The ID of this node (must be different for every node on network)
-#define NETWORKID     50   // The network ID
+#define NODEID        101   // The ID of this node (must be different for every node on network)
+#define NETWORKID     200   // The network ID
 
 // Are you using the RFM69 Wing? Uncomment if you are.
 #define USING_RFM69_WING 
@@ -73,6 +73,8 @@ RFM69 radio(RF69_SPI_CS, RF69_IRQ_PIN, false, RF69_IRQ_NUM);
 #define MODE_LED_BEHAVIOUR          "MODE"
 
 Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
+
+int listening_to_node = 0;
 
 //===================================================
 // Setup
@@ -130,21 +132,40 @@ typedef struct {
 } Payload;
 Payload payload;
 
+unsigned char CHOOSEME[] = "CHOOSEME";
+
 void loop() {
    
    if (radio.receiveDone()) {
     
       if (DEBUG) Serial.println("Message received");
-      
-      if (radio.DATALEN != sizeof(Payload)) {
+
+      if (radio.DATA == CHOOSEME) {
+         if (DEBUG) Serial.println("CHOOSE ME request received");
+         listening_to_node = radio.SENDERID;
+         
+      }else if (radio.DATALEN != sizeof(Payload)) {
         if (DEBUG) Serial.println("# Invalid payload received, not matching Payload struct. -- ");
       } else {    
-        payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
-        if (DEBUG) Serial.println(payload.volume);
-        if (DEBUG) Serial.println(payload.rssi);
+
+        if (listening_to_node ==  radio.SENDERID) {
+          payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
+          if (DEBUG) Serial.println(payload.volume);
+          if (DEBUG) Serial.println(payload.rssi);
+          
+          // Send to BLE
+          sendPayloadToBLE();
+
+          if (radio.ACKRequested()) {
+            radio.sendACK();
+            Serial.print(" - ACK sent.");
+          }
+      
+        } else {
+          if (DEBUG) Serial.print("Ignoring node");
+          if (DEBUG) Serial.println(radio.SENDERID);
+        }
         
-        // Send to BLE
-        sendPayloadToBLE();
       }
     }
     
@@ -156,7 +177,6 @@ void sendPayloadToBLE() {
       // Send input data to host via Bluefruit
       ble.print(s);
       if (DEBUG) Serial.println(s);
-      delay(250);
     } 
 }
 

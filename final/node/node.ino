@@ -149,6 +149,11 @@ void onButtonChange() {
   is_in_config = true;
   config_timer = stayInConfig;
   setColor(0,0,255);
+
+  if (radio.sendWithRetry(RELAYID,"CHOOSEME", sizeof("CHOOSEME"))) {
+      if (DEBUG) Serial.println("CHOOSEME ACK received");
+  }
+               
 }
 
 
