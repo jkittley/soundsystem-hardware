@@ -38,6 +38,9 @@ unsigned long stayInConfig = 1000 * 60; // 60 secs
 // How long to wait for the relay node to respond to choose me requests befor returning to normal mode
 unsigned long waitForChooseMeAck = 1000 * 10; // 10 secs
 
+// Maximum time to spend in config mode - will exit config after x even if connected to Relay
+unsigned long max_time_in_config = 1000 * 60 * 2; // 2 minutes
+
 // Send interval
 int send_interval_normal = 4000; // ms in normal mode
 int send_interval_config = 1000; // ms in config mode
@@ -118,6 +121,7 @@ ChooseMePayload chooseMePayload;
 
 // Timers
 unsigned long config_timer = 0;
+unsigned long config_started = 0;
 unsigned long choose_timer = 0;
 unsigned long last_sent = 0;
 
@@ -192,9 +196,21 @@ void loop() {
 
   // Exit config mode if we have not had any replies from the relay node in the given period
   if (is_in_config && config_ack && config_timer < millis()) {
-    if (DEBUG) Serial.println("No ACKs from relay / No packets from server to forward - so reverting to normal mode");
+    if (DEBUG) Serial.println("Exiting config mode - No ACKs from relay / No packets from server to forward");
     endConfigMode();
   }
+
+  // Exit config if time out reached - even if still connected
+  if (is_in_config && config_ack && config_started + max_time_in_config < millis()) {
+    if (DEBUG) Serial.println("Exiting config mode - Time limit reached");
+    endConfigMode();
+  }
+
+  // Exit config if if the button is pressed 
+//  if (config_started > millis() + 3000 && digitalRead(configButton) == HIGH) {
+//    if (DEBUG) Serial.println("Exiting config mode - Button pressed");
+//    endConfigMode();
+//  }
 
   // If the microphone has failed to get a reading x many times, reboot the node
   if (failure_count > 10000) {
@@ -274,6 +290,7 @@ void loop() {
 void startConfigMode() {
   config_timer = millis() + stayInConfig;
   choose_timer = millis() + waitForChooseMeAck;
+  config_started = millis();
   is_in_config = true;
   config_ack = false;
 
