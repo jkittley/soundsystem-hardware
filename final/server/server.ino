@@ -118,7 +118,7 @@ void loop() {
 
       if (radio.ACKRequested()) {
           radio.sendACK();
-          Serial.print(" - ACK sent.");
+          Serial.println(" - ACK sent.");
       }
           
       // Send to BLE
