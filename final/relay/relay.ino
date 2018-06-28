@@ -20,7 +20,7 @@ bool DEBUG = true;  // Show debug messages
 
 // Node and network config
 #define NODEID        101   // The ID of this node (must be different for every node on network)
-#define NETWORKID     200   // The network ID
+#define NETWORKID     20   // The network ID
 
 // Are you using the RFM69 Wing? Uncomment if you are.
 #define USING_RFM69_WING 
@@ -34,6 +34,12 @@ bool DEBUG = true;  // Show debug messages
 // Serial board rate - just used to print debug messages
 #define SERIAL_BAUD   115200
 
+// Conversion to percentage
+float min_db = 35; // Background level
+float max_db = 90; // Everything above this is 100%
+float worst_sig = abs(-90);
+float best_sig  = abs(-25); 
+   
 // **********************************************************************************
 // **********************************************************************************
 //
@@ -75,6 +81,20 @@ RFM69 radio(RF69_SPI_CS, RF69_IRQ_PIN, false, RF69_IRQ_NUM);
 Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
 
 int listening_to_node = 0;
+
+// Define payloads
+typedef struct {
+  uint8_t volume;  // Volume
+  uint8_t battery; // Battery voltage
+  uint8_t rssi;    // rssi
+} Payload;
+Payload payload;
+
+typedef struct {
+  uint8_t value;  // Volume
+} ChooseMePayload;
+ChooseMePayload chooseMePayload;
+
 
 //===================================================
 // Setup
@@ -124,56 +144,56 @@ void setup() {
 // Main loop
 //===================================================
 
-// Define payload
-typedef struct {
-  uint8_t volume;  // Volume
-  uint8_t battery; // Battery voltage
-  uint8_t rssi;    // rssi
-} Payload;
-Payload payload;
-
-unsigned char CHOOSEME[] = "CHOOSEME";
-
 void loop() {
    
    if (radio.receiveDone()) {
     
       if (DEBUG) Serial.println("Message received");
 
-      if (radio.DATA == CHOOSEME) {
+      // Choose me
+      if (radio.DATALEN == sizeof(ChooseMePayload)) {
          if (DEBUG) Serial.println("CHOOSE ME request received");
          listening_to_node = radio.SENDERID;
-         
-      }else if (radio.DATALEN != sizeof(Payload)) {
-        if (DEBUG) Serial.println("# Invalid payload received, not matching Payload struct. -- ");
-      } else {    
-
-        if (listening_to_node ==  radio.SENDERID) {
-          payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
-          if (DEBUG) Serial.println(payload.volume);
-          if (DEBUG) Serial.println(payload.rssi);
+          if (DEBUG) Serial.println("Listening now to node");
+          if (DEBUG) Serial.println(listening_to_node);
+        if (radio.ACKRequested()) {
+            radio.sendACK();
+            Serial.print(" - ACK sent.");
+          }
           
+      // Actual data
+      } else if (radio.DATALEN == sizeof(Payload)) {    
+        if (listening_to_node == radio.SENDERID) {
+          payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
+         
           // Send to BLE
           sendPayloadToBLE();
 
           if (radio.ACKRequested()) {
             radio.sendACK();
-            Serial.print(" - ACK sent.");
+            Serial.println(" - ACK sent.");
           }
       
         } else {
           if (DEBUG) Serial.print("Ignoring node");
           if (DEBUG) Serial.println(radio.SENDERID);
         }
-        
+
+      // Unknown struct
+      } else {
+        if (DEBUG) Serial.println("# Invalid payload received, not matching Payload struct. -- "); 
       }
     }
     
 }
 
 void sendPayloadToBLE() {  
-    if (ble.isConnected()) {
-      String s = "data=0,"+String(payload.rssi)+","+String(payload.volume)+",0,0";
+  if (ble.isConnected()) {
+      
+      float sendDB = max(0, min(100, 100 * ( (payload.volume-min_db) / (max_db-min_db) ) ));
+      float sendRSSI = 100 - max(0, min(100, 100 * ( (abs(payload.rssi) - best_sig) / (worst_sig-best_sig) ) ));
+
+      String s = "data=0,"+String(sendRSSI)+","+String(sendDB)+",0,0";
       // Send input data to host via Bluefruit
       ble.print(s);
       if (DEBUG) Serial.println(s);
