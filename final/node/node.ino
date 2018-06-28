@@ -32,7 +32,6 @@
 // Battery pin
 #define VBATPIN A7
 
-bool LOG = true;    // Log data out
 bool DEBUG = true;  // Show debug messages
 
 // How long to stay in config mode
@@ -131,7 +130,8 @@ unsigned long last_sent = 0;
 // Mode states
 bool is_in_config = false;
 bool config_ack = false;
-
+bool exit_after_next_msg = false;
+bool buttonEnabled = true;
 
 //======================================================================================================
 // Setup
@@ -140,8 +140,8 @@ bool config_ack = false;
 void setup() {
 
   //  Wait for Serial if we are in debug
-  if (LOG || DEBUG) Serial.begin(SERIAL_BAUD);
-  if (LOG || DEBUG) { while (!Serial) {  delay(100); } }
+  if (DEBUG) Serial.begin(SERIAL_BAUD);
+//  if (LOG || DEBUG) { while (!Serial) {  delay(100); } }
 
   // Initialize the radio
   radio.initialize(FREQUENCY, NODEID, NETWORKID);
@@ -152,7 +152,7 @@ void setup() {
 
   // Init Microphone
   if (!I2S.begin(I2S_PHILIPS_MODE, 16000, 32)) {
-    if (DEBUG) Serial.println("Failed to initialize I2S!");
+    if (Serial) Serial.println("Failed to initialize I2S!");
     while (1); // do nothing
   }
 
@@ -167,13 +167,26 @@ void setup() {
 void loop() {
 
   // If the button is pressed then try to enter config mode
-  if (digitalRead(configButton) == HIGH && !is_in_config) {
-    if (DEBUG) Serial.println("Switching to config mode");
-    setColor(0,255,0);
+  if (digitalRead(configButton) == HIGH && buttonEnabled) {
+    // Disable buttong until tasks are done - stops debounce issues
+    buttonEnabled = false;
+    if (Serial) Serial.println("Switching mode");
+    // Stops interupts causing a crash - I think
+    radio.sleep();
+    // Show color
+    if (!is_in_config) setColor(0,255,0); // Green - let go of button
+    if (is_in_config) setColor(255,0,0);  // Red - Let go of button
     // Wait for button release
-    while(digitalRead(configButton) == HIGH) { ; }
+    while(true) { if (digitalRead(configButton) == LOW) break; }
     setColor(0,0,0);
-    startConfigMode();
+    // Act
+    if (is_in_config) {
+      if (Serial) Serial.println("Exiting config mode - Button pressed");
+      endConfigMode();
+    } else {
+      if (Serial) Serial.println("Starting config mode - Button pressed");
+      startConfigMode();
+    }
   }
 
   // Listen for incoming messages
@@ -181,7 +194,7 @@ void loop() {
 
     // If the message is from the base station and we are expecting them i.e. we are in config mode
     if (is_in_config && config_ack && radio.SENDERID == BASEID) {
-      if (DEBUG) Serial.println("Message from basestation");
+      if (Serial) Serial.println("Message from basestation");
       if (radio.DATALEN == sizeof(RXPayload)) {
         receivePayload = *(RXPayload*)radio.DATA;        
         if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload))) {
@@ -203,25 +216,20 @@ void loop() {
 
   // Exit config mode if we have not had any replies from the relay node in the given period
   if (is_in_config && config_ack && config_timer < millis()) {
-    if (DEBUG) Serial.println("Exiting config mode - No ACKs from relay / No packets from server to forward");
+    if (Serial) Serial.println("Exiting config mode - No ACKs from relay / No packets from server to forward");
     endConfigMode();
   }
 
   // Exit config if time out reached - even if still connected
   if (is_in_config && config_ack && config_started + max_time_in_config < millis()) {
-    if (DEBUG) Serial.println("Exiting config mode - Time limit reached");
+    if (Serial) Serial.println("Exiting config mode - Time limit reached");
     endConfigMode();
   }
 
-  // Exit config if if the button is pressed 
-  if (is_in_config && config_ack && digitalRead(configButton) == HIGH) {
-    if (DEBUG) Serial.println("Exiting config mode - Button pressed");
-    endConfigMode();
-  }
 
   // If the microphone has failed to get a reading x many times, reboot the node
   if (failure_count > 10000) {
-    if (DEBUG) Serial.print("Resetting Microphone...");
+    if (Serial) Serial.print("Resetting Microphone...");
     NVIC_SystemReset();
     failure_count = 0;
   }
@@ -244,7 +252,7 @@ void loop() {
     // We do have enough samples so send a reading
     } else {
   
-      if (DEBUG) Serial.println("Sending");
+      if (Serial) Serial.println("Sending");
   
       float meanval = 0;
       float minsample = 100000;
@@ -274,7 +282,7 @@ void loop() {
       sendPayload.battery = getBatteryLevel();
       sendPayload.volume  = dB;
       
-      if (DEBUG) {
+      if (Serial) {
         Serial.print("Vol dB: "); Serial.print(sendPayload.volume);
         Serial.print(" | Bat: "); Serial.print(sendPayload.battery);
         Serial.print(" | Reply: "); Serial.println(sendPayload.reply);
@@ -282,13 +290,17 @@ void loop() {
 
       // Send the message
       if (radio.sendWithRetry(BASEID, (const uint8_t*) &sendPayload, sizeof(sendPayload))) {
-        if (DEBUG)  Serial.print("ACK recieved");
+        if (Serial)  Serial.println("ACK recieved");
       } else {
-        if (DEBUG)  Serial.print("NO ACK recieved");
+        if (Serial)  Serial.println("NO ACK recieved");
       }
 
       // Record when message sent
       last_sent = millis();
+
+      // If exit config mode has been requested then act on it now
+      if (exit_after_next_msg) actuallyExitConfigMode();
+      
     }
   }
 }
@@ -300,17 +312,19 @@ void startConfigMode() {
   config_started = millis();
   is_in_config = true;
   config_ack = false;
+  exit_after_next_msg = false;
 
   // Ask relay if we can be chosen and wait for confirmation / error
   while (!config_ack) {
     setColor(0, 0, 255);
-    if (DEBUG) Serial.println("Sending CHOOSEME");
+    if (Serial) Serial.println("Sending CHOOSEME");
     chooseMePayload.value = 10;
     if (radio.sendWithRetry(RELAYID, (const uint8_t*) &chooseMePayload, sizeof(chooseMePayload))) {
       // If we get accepted
-      if (DEBUG) Serial.println("Got ACK for CHOOSEME");
+      if (Serial) Serial.println("Got ACK for CHOOSEME");
       setColor(0, 0, 255);
       config_ack = true;
+      buttonEnabled = true;
       return;
     }
     // If we try for too long
@@ -331,26 +345,28 @@ void startConfigMode() {
 
 
 void endConfigMode() {
-  setColor(255, 0, 0);
+  exit_after_next_msg = true;
+}
+
+void actuallyExitConfigMode() {
   is_in_config = false;
   config_ack = false;
   config_timer = 0;
   choose_timer = 0;
-  delay(500);
   setColor(0, 0, 0);
-  delay(100);
+  buttonEnabled = true;
 }
 
 
 // Reset the Radio
 void resetRadio() {
-  if (DEBUG) Serial.print("Resetting radio...");
+  if (Serial) Serial.print("Resetting radio...");
   pinMode(RF69_RESET, OUTPUT);
   digitalWrite(RF69_RESET, HIGH);
   delay(20);
   digitalWrite(RF69_RESET, LOW);
   delay(500);
-  if (DEBUG) Serial.println(" complete");
+  if (Serial) Serial.println(" complete");
 }
 
 
@@ -367,7 +383,7 @@ void setColor(int red, int green, int blue) {
 
 
 float getBatteryLevel() {
-  if (DEBUG) Serial.println("Getting battery voltage");
+  if (Serial) Serial.println("Getting battery voltage");
   float measuredvbat = analogRead(VBATPIN);
   measuredvbat *= 2;    // we divided by 2, so multiply back
   measuredvbat *= 3.3;  // Multiply by 3.3V, our reference voltage

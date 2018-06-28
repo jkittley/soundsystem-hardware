@@ -148,7 +148,7 @@ void sendPayloadToSerial(int sender, int rssi) {
   root["sender"] = sender;
   root["rssi"]   = rssi;
   root["pay_volume"]  = receivePayload.volume;
-  root["pay_battery"] = receivePayload.battery;
+  root["pay_battery"] = float(receivePayload.battery) / 10.0;
   root["pay_reply"] = receivePayload.reply;
   root.printTo(Serial);
   Serial.println();

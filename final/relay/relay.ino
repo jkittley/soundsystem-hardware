@@ -161,11 +161,17 @@ void loop() {
           if (DEBUG) Serial.println(listening_to_node);
         if (radio.ACKRequested()) {
             radio.sendACK();
-            Serial.print(" - ACK sent.");
+            Serial.println(" - ACK sent.");
           }
           
       // Actual data
-      } else if (radio.DATALEN == sizeof(Payload)) {    
+      } else if (radio.DATALEN == sizeof(Payload)) {   
+
+        // If no node set, then take it
+        if (listening_to_node == 0) {
+          listening_to_node = radio.SENDERID;
+        }
+         
         if (listening_to_node == radio.SENDERID) {
           payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
          
@@ -191,15 +197,16 @@ void loop() {
 }
 
 void sendPayloadToBLE() {  
-  if (ble.isConnected()) {
-      float sendDB = max(0, min(100, 100 * ( (payload.volume-min_db) / (max_db-min_db) ) ));
-      float sendRSSI = 100 - max(0, min(100, 100 * ( (abs(payload.rssi) - best_sig) / (worst_sig-best_sig) ) ));
-      float this_battery = getBatteryLevel();
-      float node_battery = payload.battery;
-      String s = "data="+String(node_battery)+","+String(sendRSSI)+","+String(sendDB)+","+String(this_battery)+",0";
-      // Send input data to host via Bluefruit
+    float sendDB = max(0, min(100, 100 * ( (payload.volume-min_db) / (max_db-min_db) ) ));
+    float sendRSSI = 100 - max(0, min(100, 100 * ( (abs(payload.rssi) - best_sig) / (worst_sig-best_sig) ) ));
+    float this_battery = getBatteryLevel();
+    float node_battery = float(payload.battery) / 10.0;
+    String s = "data="+String(node_battery)+","+String(sendRSSI)+","+String(sendDB)+","+String(this_battery)+",0";
+    // Send input data to host via Bluefruit
+    if (DEBUG) Serial.println(s);
+    if (ble.isConnected()) {
       ble.print(s);
-      if (DEBUG) Serial.println(s);
+      if (DEBUG) Serial.println("Sent via BLE");
     } 
 }
 
@@ -342,5 +349,5 @@ float getBatteryLevel() {
   measuredvbat *= 2;    // we divided by 2, so multiply back
   measuredvbat *= 3.3;  // Multiply by 3.3V, our reference voltage
   measuredvbat /= 1024; // convert to voltage
-  return measuredvbat*10;
+  return measuredvbat;
 }
