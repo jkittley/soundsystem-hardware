@@ -166,6 +166,10 @@ void loop() {
   // If the button is pressed then try to enter config mode
   if (digitalRead(configButton) == HIGH && !is_in_config) {
     if (DEBUG) Serial.println("Switching to config mode");
+    setColor(0,255,0);
+    // Wait for button release
+    while(digitalRead(configButton) == HIGH) { ; }
+    setColor(0,0,0);
     startConfigMode();
   }
 
@@ -207,10 +211,10 @@ void loop() {
   }
 
   // Exit config if if the button is pressed 
-//  if (config_started > millis() + 3000 && digitalRead(configButton) == HIGH) {
-//    if (DEBUG) Serial.println("Exiting config mode - Button pressed");
-//    endConfigMode();
-//  }
+  if (is_in_config && config_ack && digitalRead(configButton) == HIGH) {
+    if (DEBUG) Serial.println("Exiting config mode - Button pressed");
+    endConfigMode();
+  }
 
   // If the microphone has failed to get a reading x many times, reboot the node
   if (failure_count > 10000) {
