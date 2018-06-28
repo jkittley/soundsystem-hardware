@@ -34,6 +34,9 @@ bool DEBUG = true;  // Show debug messages
 // Serial board rate - just used to print debug messages
 #define SERIAL_BAUD   115200
 
+// Battery pin
+#define VBATPIN A7
+
 // Conversion to percentage
 float min_db = 35; // Background level
 float max_db = 90; // Everything above this is 100%
@@ -189,11 +192,11 @@ void loop() {
 
 void sendPayloadToBLE() {  
   if (ble.isConnected()) {
-      
       float sendDB = max(0, min(100, 100 * ( (payload.volume-min_db) / (max_db-min_db) ) ));
       float sendRSSI = 100 - max(0, min(100, 100 * ( (abs(payload.rssi) - best_sig) / (worst_sig-best_sig) ) ));
-
-      String s = "data=0,"+String(sendRSSI)+","+String(sendDB)+",0,0";
+      float this_battery = getBatteryLevel();
+      float node_battery = payload.battery;
+      String s = "data="+String(node_battery)+","+String(sendRSSI)+","+String(sendDB)+","+String(this_battery)+",0";
       // Send input data to host via Bluefruit
       ble.print(s);
       if (DEBUG) Serial.println(s);
@@ -332,3 +335,12 @@ void initBLE() {
   ble.setMode(BLUEFRUIT_MODE_DATA);
 }
 
+
+float getBatteryLevel() {
+  if (DEBUG) Serial.println("Getting battery voltage");
+  float measuredvbat = analogRead(VBATPIN);
+  measuredvbat *= 2;    // we divided by 2, so multiply back
+  measuredvbat *= 3.3;  // Multiply by 3.3V, our reference voltage
+  measuredvbat /= 1024; // convert to voltage
+  return measuredvbat*10;
+}

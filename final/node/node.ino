@@ -29,6 +29,9 @@
 // Serial board rate - just used to print debug messages
 #define SERIAL_BAUD   115200
 
+// Battery pin
+#define VBATPIN A7
+
 bool LOG = true;    // Log data out
 bool DEBUG = true;  // Show debug messages
 
@@ -268,7 +271,7 @@ void loop() {
   
       // Send data to relay node
       sendPayload.reply   = is_in_config ? 1 : 0; // If in config mode, request a reply with RSSI included
-      sendPayload.battery = 0;
+      sendPayload.battery = getBatteryLevel();
       sendPayload.volume  = dB;
       
       if (DEBUG) {
@@ -361,3 +364,14 @@ void setColor(int red, int green, int blue) {
   analogWrite(greenPin, green);
   analogWrite(bluePin, blue);
 }
+
+
+float getBatteryLevel() {
+  if (DEBUG) Serial.println("Getting battery voltage");
+  float measuredvbat = analogRead(VBATPIN);
+  measuredvbat *= 2;    // we divided by 2, so multiply back
+  measuredvbat *= 3.3;  // Multiply by 3.3V, our reference voltage
+  measuredvbat /= 1024; // convert to voltage
+  return measuredvbat*10;
+}
+
