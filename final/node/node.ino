@@ -251,18 +251,36 @@ void loop() {
 
         // Read the ACK, does it contain RSSI data?
         if (radio.DATALEN == sizeof(RXPayload)) {
-          // FOrward this data to the BLE node
+          
+          // Forward this data to the BLE node
           receivePayload = *(RXPayload*)radio.DATA;
-          if (Serial) Serial.println(receivePayload.rssi);
-          if (Serial) Serial.println(receivePayload.volume);
-          if (Serial) Serial.println(receivePayload.battery);
           if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload), retries, ackwait)) {
             if (Serial)  Serial.println("ACK recieved (For TX to Relay)");
-            // Sustain config mode because relay replied
-            config_timer = millis() + stayInConfig;
+
+            // Response from relay
+            if (radio.DATALEN == sizeof(ChooseMePayload)) { 
+                chooseMePayload = *(ChooseMePayload*)radio.DATA;
+
+                if (Serial) Serial.println(chooseMePayload.value);
+
+                // Thanks
+                if (chooseMePayload.value == 200) {
+                  // Sustain config mode because relay replied
+                  config_timer = millis() + stayInConfig;
+
+                // No thanks - not listening to you
+                } else if (chooseMePayload.value == 101) {
+                  config_timer = 0;
+                }
+                
+            }
+            
+            
+
           } else {
             if (Serial)  Serial.println("NO - ACK recieved (For TX to Relay)");
           }
+          
         }
       } else {
         if (Serial)  Serial.println("NO ACK recieved (For TX to Base)");

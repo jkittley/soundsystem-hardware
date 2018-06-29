@@ -146,7 +146,8 @@ void setup() {
 
 
 void loop() {
-      
+
+    
    if (radio.receiveDone()) {
     
       if (Serial) Serial.println("Message received");
@@ -165,35 +166,27 @@ void loop() {
       // Actual data
       } else if (radio.DATALEN == sizeof(Payload)) {   
 
-        // If no node set, then take it
-        if (listening_to_node == 0) {
-          listening_to_node = radio.SENDERID;
-        }
-         
-        if (listening_to_node == radio.SENDERID) {
-          payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
-         
-          // Send to BLE
-          sendPayloadToBLE(this_battery);
 
-          if (radio.ACKRequested()) {
-            radio.sendACK();
+   
+        payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
+
+        // Send to BLE if we are listening to this node
+        if (listening_to_node == radio.SENDERID) sendPayloadToBLE(this_battery);
+          
+        if (radio.ACKRequested()) {
+            chooseMePayload.value = (listening_to_node == radio.SENDERID) ? 200 : 101;
+            radio.sendACK((const uint8_t*) &chooseMePayload, sizeof(chooseMePayload));
             Serial.println(" - ACK sent.");
-          }
-
-          this_battery = getBatteryLevel();
-      
-        } else {
-          if (Serial) Serial.print("Ignoring node");
-          if (Serial) Serial.println(radio.SENDERID);
         }
+
+        this_battery = getBatteryLevel();      
 
       // Unknown struct
       } else {
         if (Serial) Serial.println("# Invalid payload received, not matching Payload struct. -- "); 
       }
-    }
-    
+
+   }    
 }
 
 void sendPayloadToBLE(float this_battery) {  
