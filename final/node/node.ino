@@ -217,7 +217,7 @@ void loop() {
         receivePayload = *(RXPayload*)radio.DATA;        
 //        if (Serial)  Serial.println(receivePayload.volume);
        
-        if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload)), retries, ackwait) {
+        if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload), retries, ackwait)) {
           if (Serial)  Serial.println("ACK recieved (For TX to Relay)");
           // Sustain config mode because relay replied
           config_timer = millis() + stayInConfig;
@@ -239,13 +239,13 @@ void loop() {
   }
 
   // Exit config mode if we have not had any replies from the relay node in the given period
-  if (is_in_config && config_ack && config_timer < millis()) {
+  if (!exit_after_next_msg && is_in_config && config_ack && config_timer < millis()) {
     if (Serial) Serial.println("Exiting config mode - No ACKs from relay / No packets from server to forward");
     endConfigMode();
   }
 
   // Exit config if time out reached - even if still connected
-  if (is_in_config && config_ack && config_started + max_time_in_config < millis()) {
+  if (!exit_after_next_msg && is_in_config && config_ack && config_started + max_time_in_config < millis()) {
     if (Serial) Serial.println("Exiting config mode - Time limit reached");
     endConfigMode();
   }
