@@ -115,8 +115,17 @@ void loop() {
       receivePayload = *(RXPayload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
 
       if (radio.ACKRequested()) {
-          radio.sendACK();
-          Serial.println(" - ACK sent.");
+        if (receivePayload.reply == 1) {
+            if (DEBUG) Serial.println("- ACK sent with RSSI info");
+            sendPayload.volume = receivePayload.volume;
+            sendPayload.battery = receivePayload.battery;
+            sendPayload.rssi = abs(radio.RSSI);
+            // Cant use retry as the is an issue with forwarding and sending acks
+            radio.sendACK((const uint8_t*) &sendPayload, sizeof(sendPayload));
+          } else {
+            radio.sendACK();
+            Serial.println(" - ACK sent.");
+          }
       }
           
       // Send to BLE

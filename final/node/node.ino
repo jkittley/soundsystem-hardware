@@ -145,20 +145,20 @@ void setup() {
 
   //  Wait for Serial if we are in debug
   if (DEBUG) {
-    setColor(255,255,255);
+    setColor(255, 255, 255);
     unsigned long serial_timeout = millis() + 10000;
     Serial.begin(SERIAL_BAUD);
-    while (!Serial && millis() < serial_timeout) {  
-      delay(100); 
-    } 
-    setColor(0,0,0);
+    while (!Serial && millis() < serial_timeout) {
+      delay(100);
+    }
+    setColor(0, 0, 0);
   }
-  
+
   // Initialize the radio
   radio.initialize(FREQUENCY, NODEID, NETWORKID);
-  #ifdef IS_RFM69HW_HCW
-    radio.setHighPower(); //must include this only for RFM69HW/HCW!
-  #endif
+#ifdef IS_RFM69HW_HCW
+  radio.setHighPower(); //must include this only for RFM69HW/HCW!
+#endif
   radio.setPowerLevel(RADIO_POWER);
 
   // Init Microphone
@@ -187,13 +187,15 @@ void loop() {
     if (Serial) Serial.println("Switching mode");
     // Stops interupts causing a crash - I think
     radio.sleep();
-    
+
     // Show color
-    if (!is_in_config) setColor(0,255,0); // Green - let go of button
-    if (is_in_config) setColor(255,0,0);  // Red - Let go of button
+    if (!is_in_config) setColor(0, 255, 0); // Green - let go of button
+    if (is_in_config) setColor(255, 0, 0); // Red - Let go of button
     // Wait for button release
-    while(true) { if (digitalRead(configButton) == LOW) break; }
-    setColor(0,0,0);
+    while (true) {
+      if (digitalRead(configButton) == LOW) break;
+    }
+    setColor(0, 0, 0);
     // Act
     if (is_in_config) {
       if (Serial) Serial.println("Exiting config mode - Button pressed");
@@ -202,40 +204,6 @@ void loop() {
       if (Serial) Serial.println("Starting config mode - Button pressed");
       startConfigMode();
     }
-  }
-
-  // Listen for incoming messages
-  if (radio.receiveDone()) {
-
-    // If the message is from the base station and we are expecting them i.e. we are in config mode
-    if (is_in_config && config_ack && radio.SENDERID == BASEID) {
-//      if (Serial) Serial.println("Message from basestation");
-      
-      if (radio.DATALEN == sizeof(RXPayload)) {
-//        if (Serial) Serial.println("Forwarding it to Relay.");
-      
-        receivePayload = *(RXPayload*)radio.DATA;        
-//        if (Serial)  Serial.println(receivePayload.volume);
-       
-        if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload), retries, ackwait)) {
-          if (Serial)  Serial.println("ACK recieved (For TX to Relay)");
-          // Sustain config mode because relay replied
-          config_timer = millis() + stayInConfig;
-        } else {
-          if (Serial)  Serial.println("NO - ACK recieved (For TX to Relay)");
-        }
-        
-      }
-    }    
-
-    // Cant send ACKS after forwarding as globals overwritten and not befor for same reason.
-    // ACK any incoming message
-//    if (radio.ACKRequested()) {
-//       radio.sendACK();
-//       Serial.println(" - ACK sent.");
-//    } 
-    //delay(20);
-    
   }
 
   // Exit config mode if we have not had any replies from the relay node in the given period
@@ -258,65 +226,44 @@ void loop() {
     failure_count = 0;
   }
 
-  
   // Control send interval without using a delay - A delay in config mode prevents messages being passed from base to relay node
   if ((!is_in_config && millis() > last_sent + send_interval_normal) || (is_in_config && millis() > last_sent + send_interval_config)) {
-    
-    // We dont have enough samples yet
-    if (sample_index < num_samples) {
 
-      int sample = I2S.read();
-      if (sample != 0 && sample != -1) {
-        // convert to 18 bit signed
-        sample >>= 14;
-        samples[sample_index] = sample;
-        sample_index++;
-      } else {
-        failure_count++;
-      }
+    // If sampelling is complete
+    int dB = getSample();
+    if (dB > 0) {
 
-    // We do have enough samples so send a reading
-    } else {
-  
-      if (Serial) Serial.println("Sending");
-  
-      float meanval = 0;
-      float minsample = 100000;
-      float maxsample = -100000;
-      for (int i = 0; i < num_samples; i++) { meanval += samples[i]; }
-      meanval /= num_samples;
-  
-      // Subtract it from all sapmles to get a 'normalized' output
-      for (int i = 0; i < num_samples; i++) {  samples[i] -= meanval; }
-  
-      // Find the 'peak to peak' max
-      maxsample, minsample;
-      for (int i = 0; i < num_samples; i++) {
-        minsample = min(minsample, samples[i]);
-        maxsample = max(maxsample, samples[i]);
-      }
-
-      // Calc dB
-      int dB = 20 * log10((float)maxsample / (float)ADC_SOUND_REF) + DB_SOUND_REF;
-  
-      // Reset sampling
-      sample_index = 0;
-      failure_count = 0;
-  
       // Send data to relay node
       sendPayload.reply   = is_in_config ? 1 : 0; // If in config mode, request a reply with RSSI included
       sendPayload.battery = getBatteryLevel();
       sendPayload.volume  = dB;
-      
+
       if (Serial) {
+        Serial.println("Sending");
         Serial.print("Vol dB: "); Serial.print(sendPayload.volume);
         Serial.print(" | Bat: "); Serial.print(sendPayload.battery);
         Serial.print(" | Reply: "); Serial.println(sendPayload.reply);
       }
 
-      // Send the message
+      // Send the message to the base server
       if (radio.sendWithRetry(BASEID, (const uint8_t*) &sendPayload, sizeof(sendPayload), retries, ackwait)) {
         if (Serial)  Serial.println("ACK recieved (For TX to Base)");
+
+        // Read the ACK, does it contain RSSI data?
+        if (radio.DATALEN == sizeof(RXPayload)) {
+          // FOrward this data to the BLE node
+          receivePayload = *(RXPayload*)radio.DATA;
+          if (Serial) Serial.println(receivePayload.rssi);
+          if (Serial) Serial.println(receivePayload.volume);
+          if (Serial) Serial.println(receivePayload.battery);
+          if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload), retries, ackwait)) {
+            if (Serial)  Serial.println("ACK recieved (For TX to Relay)");
+            // Sustain config mode because relay replied
+            config_timer = millis() + stayInConfig;
+          } else {
+            if (Serial)  Serial.println("NO - ACK recieved (For TX to Relay)");
+          }
+        }
       } else {
         if (Serial)  Serial.println("NO ACK recieved (For TX to Base)");
       }
@@ -330,7 +277,7 @@ void loop() {
       } else if (enter_after_next_msg) {
         actuallyStartConfigMode();
       }
-      
+
     }
   }
 }
@@ -347,13 +294,13 @@ void startConfigMode() {
 void actuallyStartConfigMode() {
   enter_after_next_msg = false;
   exit_after_next_msg = false;
-  
+
   config_timer = millis() + stayInConfig * 5;
   choose_timer = millis() + waitForChooseMeAck;
   config_started = millis();
   is_in_config = true;
   config_ack = false;
-  
+
   // Ask relay if we can be chosen and wait for confirmation / error
   while (!config_ack) {
     setColor(0, 0, 255);
@@ -361,7 +308,7 @@ void actuallyStartConfigMode() {
     chooseMePayload.value = 10;
 
     radio.sleep();
-    
+
     if (radio.sendWithRetry(RELAYID, (const uint8_t*) &chooseMePayload, sizeof(chooseMePayload), retries, ackwait)) {
       // If we get accepted
       if (Serial) Serial.println("Got ACK for CHOOSEME");
@@ -370,7 +317,7 @@ void actuallyStartConfigMode() {
       buttonEnabled = true;
       return;
     }
-   
+
     // If we try for too long
     if (choose_timer < millis()) {
       endConfigMode();
@@ -443,7 +390,7 @@ float getBatteryLevel() {
   measuredvbat *= 2;    // we divided by 2, so multiply back
   measuredvbat *= 3.3;  // Multiply by 3.3V, our reference voltage
   measuredvbat /= 1024; // convert to voltage
-  return measuredvbat*10;
+  return measuredvbat * 10;
 }
 
 //===================================================
@@ -459,32 +406,82 @@ void printDebugInfo() {
   Serial.print("I am node: "); Serial.println(NODEID);
   Serial.print("on network: "); Serial.println(NETWORKID);
   Serial.println("I am a relay");
-  
-  #if defined (__AVR_ATmega32U4__)
-    Serial.println("AVR ATmega 32U4");
-  #else
-    Serial.println("SAMD FEATHER M0");
-  #endif
-  #ifdef USING_RFM69_WING
-    Serial.println("Using RFM69 Wing: YES");
-  #else
-    Serial.println("Using RFM69 Wing: NO");
-  #endif
+
+#if defined (__AVR_ATmega32U4__)
+  Serial.println("AVR ATmega 32U4");
+#else
+  Serial.println("SAMD FEATHER M0");
+#endif
+#ifdef USING_RFM69_WING
+  Serial.println("Using RFM69 Wing: YES");
+#else
+  Serial.println("Using RFM69 Wing: NO");
+#endif
   Serial.print("RF69_SPI_CS: "); Serial.println(RF69_SPI_CS);
   Serial.print("RF69_IRQ_PIN: "); Serial.println(RF69_IRQ_PIN);
   Serial.print("RF69_IRQ_NUM: "); Serial.println(RF69_IRQ_NUM);
-  #ifdef ENABLE_ATC
-    Serial.println("RFM69 Auto Transmission Control: Enabled");
-  #else
-    Serial.println("RFM69 Auto Transmission Control: Disabled");
-  #endif
-  #ifdef ENCRYPTKEY
-    Serial.println("Encryption: Enabled");
-  #else
-    Serial.println("Encryption: Disabled");
-  #endif
+#ifdef ENABLE_ATC
+  Serial.println("RFM69 Auto Transmission Control: Enabled");
+#else
+  Serial.println("RFM69 Auto Transmission Control: Disabled");
+#endif
+#ifdef ENCRYPTKEY
+  Serial.println("Encryption: Enabled");
+#else
+  Serial.println("Encryption: Disabled");
+#endif
   char buff[50];
-  sprintf(buff, "\nListening at %d Mhz...", FREQUENCY==RF69_433MHZ ? 433 : FREQUENCY==RF69_868MHZ ? 868 : 915);
+  sprintf(buff, "\nListening at %d Mhz...", FREQUENCY == RF69_433MHZ ? 433 : FREQUENCY == RF69_868MHZ ? 868 : 915);
   Serial.println(buff);
+}
+
+
+//===================================================
+// Get Audion sample
+//===================================================
+
+int getSample() {
+  // We dont have enough samples yet
+  if (sample_index < num_samples) {
+
+    int sample = I2S.read();
+    if (sample != 0 && sample != -1) {
+      // convert to 18 bit signed
+      sample >>= 14;
+      samples[sample_index] = sample;
+      sample_index++;
+    } else {
+      failure_count++;
+    }
+
+    return 0;
+  }
+
+  float meanval = 0;
+  float minsample = 100000;
+  float maxsample = -100000;
+  for (int i = 0; i < num_samples; i++) {
+    meanval += samples[i];
+  }
+  meanval /= num_samples;
+
+  // Subtract it from all sapmles to get a 'normalized' output
+  for (int i = 0; i < num_samples; i++) {
+    samples[i] -= meanval;
+  }
+
+  // Find the 'peak to peak' max
+  maxsample, minsample;
+  for (int i = 0; i < num_samples; i++) {
+    minsample = min(minsample, samples[i]);
+    maxsample = max(maxsample, samples[i]);
+  }
+
+  // Reset sampling
+  sample_index = 0;
+  failure_count = 0;
+
+  // Calc dB
+  return int(20 * log10((float)maxsample / (float)ADC_SOUND_REF) + DB_SOUND_REF);
 }
 
