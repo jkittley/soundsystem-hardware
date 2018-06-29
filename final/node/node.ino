@@ -340,6 +340,7 @@ void loop() {
 //===================================================
 
 void startConfigMode() {
+  setColor(0, 0, 180);
   enter_after_next_msg = true;
 }
 
@@ -388,6 +389,7 @@ void actuallyStartConfigMode() {
 
 void endConfigMode() {
   exit_after_next_msg = true;
+  setColor(180, 0, 0);
 }
 
 void actuallyExitConfigMode() {
