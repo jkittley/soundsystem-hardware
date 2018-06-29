@@ -55,6 +55,9 @@ int bluePin = 11;
 // Config button Pin
 int configButton = A3;
 
+int retries = 2;
+int ackwait = 200;
+
 // **********************************************************************************
 // **********************************************************************************
 //
@@ -131,6 +134,7 @@ unsigned long last_sent = 0;
 bool is_in_config = false;
 bool config_ack = false;
 bool exit_after_next_msg = false;
+bool enter_after_next_msg = false;
 bool buttonEnabled = true;
 
 //======================================================================================================
@@ -140,9 +144,16 @@ bool buttonEnabled = true;
 void setup() {
 
   //  Wait for Serial if we are in debug
-  if (DEBUG) Serial.begin(SERIAL_BAUD);
-//  if (LOG || DEBUG) { while (!Serial) {  delay(100); } }
-
+  if (DEBUG) {
+    setColor(255,255,255);
+    unsigned long serial_timeout = millis() + 10000;
+    Serial.begin(SERIAL_BAUD);
+    while (!Serial && millis() < serial_timeout) {  
+      delay(100); 
+    } 
+    setColor(0,0,0);
+  }
+  
   // Initialize the radio
   radio.initialize(FREQUENCY, NODEID, NETWORKID);
   #ifdef IS_RFM69HW_HCW
@@ -176,6 +187,7 @@ void loop() {
     if (Serial) Serial.println("Switching mode");
     // Stops interupts causing a crash - I think
     radio.sleep();
+    
     // Show color
     if (!is_in_config) setColor(0,255,0); // Green - let go of button
     if (is_in_config) setColor(255,0,0);  // Red - Let go of button
@@ -197,14 +209,22 @@ void loop() {
 
     // If the message is from the base station and we are expecting them i.e. we are in config mode
     if (is_in_config && config_ack && radio.SENDERID == BASEID) {
-      if (Serial) Serial.println("Message from basestation");
+//      if (Serial) Serial.println("Message from basestation");
+      
       if (radio.DATALEN == sizeof(RXPayload)) {
+//        if (Serial) Serial.println("Forwarding it to Relay.");
+      
         receivePayload = *(RXPayload*)radio.DATA;        
-        if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload))) {
+//        if (Serial)  Serial.println(receivePayload.volume);
+       
+        if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload)), retries, ackwait) {
+          if (Serial)  Serial.println("ACK recieved (For TX to Relay)");
           // Sustain config mode because relay replied
           config_timer = millis() + stayInConfig;
-          if (Serial)  Serial.println("ACK recieved (For TX to Relay)");
+        } else {
+          if (Serial)  Serial.println("NO - ACK recieved (For TX to Relay)");
         }
+        
       }
     }    
 
@@ -238,11 +258,13 @@ void loop() {
     failure_count = 0;
   }
 
+  
   // Control send interval without using a delay - A delay in config mode prevents messages being passed from base to relay node
   if ((!is_in_config && millis() > last_sent + send_interval_normal) || (is_in_config && millis() > last_sent + send_interval_config)) {
     
     // We dont have enough samples yet
     if (sample_index < num_samples) {
+
       int sample = I2S.read();
       if (sample != 0 && sample != -1) {
         // convert to 18 bit signed
@@ -293,7 +315,7 @@ void loop() {
       }
 
       // Send the message
-      if (radio.sendWithRetry(BASEID, (const uint8_t*) &sendPayload, sizeof(sendPayload))) {
+      if (radio.sendWithRetry(BASEID, (const uint8_t*) &sendPayload, sizeof(sendPayload), retries, ackwait)) {
         if (Serial)  Serial.println("ACK recieved (For TX to Base)");
       } else {
         if (Serial)  Serial.println("NO ACK recieved (For TX to Base)");
@@ -303,7 +325,11 @@ void loop() {
       last_sent = millis();
 
       // If exit config mode has been requested then act on it now
-      if (exit_after_next_msg) actuallyExitConfigMode();
+      if (exit_after_next_msg) {
+        actuallyExitConfigMode();
+      } else if (enter_after_next_msg) {
+        actuallyStartConfigMode();
+      }
       
     }
   }
@@ -314,19 +340,28 @@ void loop() {
 //===================================================
 
 void startConfigMode() {
-  config_timer = millis() + stayInConfig;
+  enter_after_next_msg = true;
+}
+
+void actuallyStartConfigMode() {
+  enter_after_next_msg = false;
+  exit_after_next_msg = false;
+  
+  config_timer = millis() + stayInConfig * 5;
   choose_timer = millis() + waitForChooseMeAck;
   config_started = millis();
   is_in_config = true;
   config_ack = false;
-  exit_after_next_msg = false;
-
+  
   // Ask relay if we can be chosen and wait for confirmation / error
   while (!config_ack) {
     setColor(0, 0, 255);
     if (Serial) Serial.println("Sending CHOOSEME");
     chooseMePayload.value = 10;
-    if (radio.sendWithRetry(RELAYID, (const uint8_t*) &chooseMePayload, sizeof(chooseMePayload))) {
+
+    radio.sleep();
+    
+    if (radio.sendWithRetry(RELAYID, (const uint8_t*) &chooseMePayload, sizeof(chooseMePayload), retries, ackwait)) {
       // If we get accepted
       if (Serial) Serial.println("Got ACK for CHOOSEME");
       setColor(0, 0, 255);
@@ -334,6 +369,7 @@ void startConfigMode() {
       buttonEnabled = true;
       return;
     }
+   
     // If we try for too long
     if (choose_timer < millis()) {
       endConfigMode();
@@ -355,6 +391,8 @@ void endConfigMode() {
 }
 
 void actuallyExitConfigMode() {
+  exit_after_next_msg = false;
+  enter_after_next_msg = false;
   is_in_config = false;
   config_ack = false;
   config_timer = 0;

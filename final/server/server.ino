@@ -88,8 +88,6 @@ void setup() {
     delay(100);
   }
 
-  if (DEBUG) Serial.println("Serial Started");
-
   // Reset the radio
   resetRadio();
 

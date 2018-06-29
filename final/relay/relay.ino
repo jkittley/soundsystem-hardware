@@ -97,6 +97,7 @@ typedef struct {
 } ChooseMePayload;
 ChooseMePayload chooseMePayload;
 
+float this_battery = 0;
 
 //===================================================
 // Setup
@@ -104,9 +105,16 @@ ChooseMePayload chooseMePayload;
 
 void setup() {
 
-  // If debug enable Serial, but dont wait for it incase this is left on by accident
-  if (DEBUG) Serial.begin(SERIAL_BAUD);
-  if (Serial) Serial.println("Serial Started");
+   //  Wait for Serial if we are in debug
+   if (DEBUG) {
+    //setColor(255,255,255);
+    unsigned long serial_timeout = millis() + 10000;
+    Serial.begin(SERIAL_BAUD);
+    while (!Serial && millis() < serial_timeout) {  
+      delay(100); 
+    } 
+    //setColor(0,0,0);
+  }
   
   // Init BLE
   initBLE();
@@ -126,14 +134,19 @@ void setup() {
   // Debug
   if (DEBUG) printDebugInfo();
 
-}
+  // Init battery
+  this_battery = getBatteryLevel();
+  
+} 
 
 //===================================================
 // Main loop
 //===================================================
 
+
+
 void loop() {
-   
+      
    if (radio.receiveDone()) {
     
       if (Serial) Serial.println("Message received");
@@ -161,12 +174,14 @@ void loop() {
           payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
          
           // Send to BLE
-          sendPayloadToBLE();
+          sendPayloadToBLE(this_battery);
 
           if (radio.ACKRequested()) {
             radio.sendACK();
             Serial.println(" - ACK sent.");
           }
+
+          this_battery = getBatteryLevel();
       
         } else {
           if (Serial) Serial.print("Ignoring node");
@@ -181,10 +196,9 @@ void loop() {
     
 }
 
-void sendPayloadToBLE() {  
+void sendPayloadToBLE(float this_battery) {  
     float sendDB = max(0, min(100, 100 * ( (payload.volume-min_db) / (max_db-min_db) ) ));
-    float sendRSSI = 100 - max(0, min(100, 100 * ( (abs(payload.rssi) - best_sig) / (worst_sig-best_sig) ) ));
-    float this_battery = getBatteryLevel();
+    float sendRSSI = 100 - max(0, min(100, 100 * ( (abs(payload.rssi) - best_sig) / (worst_sig-best_sig) ) ));    
     float node_battery = float(payload.battery) / 10.0;
     String s = "data="+String(node_battery)+","+String(sendRSSI)+","+String(sendDB)+","+String(this_battery)+",0";
     // Send input data to host via Bluefruit
@@ -336,7 +350,7 @@ void initBLE() {
 //===================================================
 
 float getBatteryLevel() {
-  if (Serial) Serial.println("Getting battery voltage");
+//  if (Serial) Serial.println("Getting battery voltage");
   float measuredvbat = analogRead(VBATPIN);
   measuredvbat *= 2;    // we divided by 2, so multiply back
   measuredvbat *= 3.3;  // Multiply by 3.3V, our reference voltage
