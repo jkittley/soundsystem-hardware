@@ -176,6 +176,10 @@ void resetRadio() {
 
 // Print Info
 void printDebugInfo() {
+  if (!Serial) return;
+  Serial.println("-------------------------------------");
+  Serial.println("------------ SERVER NODE ------------");
+  Serial.println("-------------------------------------");
   Serial.print("I am node: "); Serial.println(NODEID);
   Serial.print("on network: "); Serial.println(NETWORKID);
   Serial.println("I am a relay");

@@ -34,7 +34,7 @@
 
 bool DEBUG = true;  // Show debug messages
 
-// How long to stay in config mode
+// How long to stay in config mode after the last acknowlegement
 unsigned long stayInConfig = 1000 * 60; // 60 secs
 
 // How long to wait for the relay node to respond to choose me requests befor returning to normal mode
@@ -158,6 +158,9 @@ void setup() {
 
   // Button
   pinMode(configButton, OUTPUT);
+
+  //
+  if (Serial) printDebugInfo();
 }
 
 //======================================================================================================
@@ -200,6 +203,7 @@ void loop() {
         if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload))) {
           // Sustain config mode because relay replied
           config_timer = millis() + stayInConfig;
+          if (Serial)  Serial.println("ACK recieved (For TX to Relay)");
         }
       }
     }    
@@ -290,9 +294,9 @@ void loop() {
 
       // Send the message
       if (radio.sendWithRetry(BASEID, (const uint8_t*) &sendPayload, sizeof(sendPayload))) {
-        if (Serial)  Serial.println("ACK recieved");
+        if (Serial)  Serial.println("ACK recieved (For TX to Base)");
       } else {
-        if (Serial)  Serial.println("NO ACK recieved");
+        if (Serial)  Serial.println("NO ACK recieved (For TX to Base)");
       }
 
       // Record when message sent
@@ -305,6 +309,9 @@ void loop() {
   }
 }
 
+//===================================================
+// Mode Control
+//===================================================
 
 void startConfigMode() {
   config_timer = millis() + stayInConfig;
@@ -343,7 +350,6 @@ void startConfigMode() {
 
 }
 
-
 void endConfigMode() {
   exit_after_next_msg = true;
 }
@@ -357,6 +363,9 @@ void actuallyExitConfigMode() {
   buttonEnabled = true;
 }
 
+//===================================================
+// Radio
+//===================================================
 
 // Reset the Radio
 void resetRadio() {
@@ -369,6 +378,9 @@ void resetRadio() {
   if (Serial) Serial.println(" complete");
 }
 
+//===================================================
+// LED Color
+//===================================================
 
 void setColor(int red, int green, int blue) {
 #ifdef COMMON_ANODE
@@ -381,6 +393,9 @@ void setColor(int red, int green, int blue) {
   analogWrite(bluePin, blue);
 }
 
+//===================================================
+// Battery
+//===================================================
 
 float getBatteryLevel() {
   if (Serial) Serial.println("Getting battery voltage");
@@ -389,5 +404,47 @@ float getBatteryLevel() {
   measuredvbat *= 3.3;  // Multiply by 3.3V, our reference voltage
   measuredvbat /= 1024; // convert to voltage
   return measuredvbat*10;
+}
+
+//===================================================
+// Debug Message
+//===================================================
+
+// Print Info
+void printDebugInfo() {
+  if (!Serial) return;
+  Serial.println("-------------------------------------");
+  Serial.println("------------ SENSOR NODE ------------");
+  Serial.println("-------------------------------------");
+  Serial.print("I am node: "); Serial.println(NODEID);
+  Serial.print("on network: "); Serial.println(NETWORKID);
+  Serial.println("I am a relay");
+  
+  #if defined (__AVR_ATmega32U4__)
+    Serial.println("AVR ATmega 32U4");
+  #else
+    Serial.println("SAMD FEATHER M0");
+  #endif
+  #ifdef USING_RFM69_WING
+    Serial.println("Using RFM69 Wing: YES");
+  #else
+    Serial.println("Using RFM69 Wing: NO");
+  #endif
+  Serial.print("RF69_SPI_CS: "); Serial.println(RF69_SPI_CS);
+  Serial.print("RF69_IRQ_PIN: "); Serial.println(RF69_IRQ_PIN);
+  Serial.print("RF69_IRQ_NUM: "); Serial.println(RF69_IRQ_NUM);
+  #ifdef ENABLE_ATC
+    Serial.println("RFM69 Auto Transmission Control: Enabled");
+  #else
+    Serial.println("RFM69 Auto Transmission Control: Disabled");
+  #endif
+  #ifdef ENCRYPTKEY
+    Serial.println("Encryption: Enabled");
+  #else
+    Serial.println("Encryption: Disabled");
+  #endif
+  char buff[50];
+  sprintf(buff, "\nListening at %d Mhz...", FREQUENCY==RF69_433MHZ ? 433 : FREQUENCY==RF69_868MHZ ? 868 : 915);
+  Serial.println(buff);
 }
 

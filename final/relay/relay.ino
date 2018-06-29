@@ -15,7 +15,6 @@
 #include "Adafruit_BluefruitLE_UART.h"
 #include "BluefruitConfig.h"
 
-bool LOG = true;    // Log data out
 bool DEBUG = true;  // Show debug messages
 
 // Node and network config
@@ -105,23 +104,9 @@ ChooseMePayload chooseMePayload;
 
 void setup() {
 
-  // Detect serial port coinnection and enable debug
- 
-  if (LOG || DEBUG) { 
-    Serial.begin(SERIAL_BAUD);
-    while (!Serial) { delay(100); }
-  }
-  
-  int start = millis();
-  while (!Serial) { 
-    int remianing = (10000 - (millis() - start)) / 1000;
-    if (remianing < 1) {
-      DEBUG=false;
-      break;  
-    }
-    delay(100);
-  }
-  if (DEBUG) Serial.println("Serial Started");
+  // If debug enable Serial, but dont wait for it incase this is left on by accident
+  if (DEBUG) Serial.begin(SERIAL_BAUD);
+  if (Serial) Serial.println("Serial Started");
   
   // Init BLE
   initBLE();
@@ -151,14 +136,14 @@ void loop() {
    
    if (radio.receiveDone()) {
     
-      if (DEBUG) Serial.println("Message received");
+      if (Serial) Serial.println("Message received");
 
       // Choose me
       if (radio.DATALEN == sizeof(ChooseMePayload)) {
-         if (DEBUG) Serial.println("CHOOSE ME request received");
+         if (Serial) Serial.println("CHOOSE ME request received");
          listening_to_node = radio.SENDERID;
-          if (DEBUG) Serial.println("Listening now to node");
-          if (DEBUG) Serial.println(listening_to_node);
+          if (Serial) Serial.println("Listening now to node");
+          if (Serial) Serial.println(listening_to_node);
         if (radio.ACKRequested()) {
             radio.sendACK();
             Serial.println(" - ACK sent.");
@@ -184,13 +169,13 @@ void loop() {
           }
       
         } else {
-          if (DEBUG) Serial.print("Ignoring node");
-          if (DEBUG) Serial.println(radio.SENDERID);
+          if (Serial) Serial.print("Ignoring node");
+          if (Serial) Serial.println(radio.SENDERID);
         }
 
       // Unknown struct
       } else {
-        if (DEBUG) Serial.println("# Invalid payload received, not matching Payload struct. -- "); 
+        if (Serial) Serial.println("# Invalid payload received, not matching Payload struct. -- "); 
       }
     }
     
@@ -203,10 +188,10 @@ void sendPayloadToBLE() {
     float node_battery = float(payload.battery) / 10.0;
     String s = "data="+String(node_battery)+","+String(sendRSSI)+","+String(sendDB)+","+String(this_battery)+",0";
     // Send input data to host via Bluefruit
-    if (DEBUG) Serial.println(s);
+    if (Serial) Serial.println(s);
     if (ble.isConnected()) {
       ble.print(s);
-      if (DEBUG) Serial.println("Sent via BLE");
+      if (Serial) Serial.println("Sent via BLE");
     } 
 }
 
@@ -231,6 +216,10 @@ void resetRadio() {
 
 // Print Info
 void printDebugInfo() {
+  if (!Serial) return;
+  Serial.println("------------------------------------");
+  Serial.println("------------ RELAY NODE ------------");
+  Serial.println("------------------------------------");
   Serial.print("I am node: "); Serial.println(NODEID);
   Serial.print("on network: "); Serial.println(NETWORKID);
   Serial.println("I am a relay");
@@ -301,28 +290,28 @@ void listenToBLE() {
     key.concat(char(c));
   }
   if (msgToSend) {
-    if (DEBUG) { Serial.println(String(key)); }
+    if (Serial) { Serial.println(String(key)); }
     
     key.toCharArray(upd.key, sizeof(key));
     
     if (radio.sendWithRetry(3, (const void*) &upd, sizeof(upd), 3, 500)) {
-      if (DEBUG) Serial.println(" Acknoledgment received!");
+      if (Serial) Serial.println(" Acknoledgment received!");
     } else {
-      if (DEBUG) Serial.println(" No Acknoledgment after retries");
+      if (Serial) Serial.println(" No Acknoledgment after retries");
     }
   }
 }
 
 
 void initBLE() {
-  if (DEBUG) Serial.print(F("Initialising the Bluefruit LE module: "));
+  if (Serial) Serial.print(F("Initialising the Bluefruit LE module: "));
   if (!ble.begin(VERBOSE_MODE) ) {
-    if (DEBUG) Serial.println("Couldn't find Bluefruit, make sure it's in CoMmanD mode & check wiring?");
+    if (Serial) Serial.println("Couldn't find Bluefruit, make sure it's in CoMmanD mode & check wiring?");
   }
   if ( FACTORYRESET_ENABLE ) {
-    if (DEBUG) Serial.println(F("Performing a factory reset: "));
+    if (Serial) Serial.println(F("Performing a factory reset: "));
     if (!ble.factoryReset()){
-      if (DEBUG) Serial.println("Couldn't factory reset");
+      if (Serial) Serial.println("Couldn't factory reset");
     }
   }
   /* Disable command echo from Bluefruit */
@@ -333,18 +322,21 @@ void initBLE() {
   // LED Activity command is only supported from 0.6.6
   if ( ble.isVersionAtLeast(MINIMUM_FIRMWARE_VERSION) ) {
     // Change Mode LED Activity
-    if (DEBUG) Serial.println(F("Change LED activity to " MODE_LED_BEHAVIOUR));
+    if (Serial) Serial.println(F("Change LED activity to " MODE_LED_BEHAVIOUR));
     ble.sendCommandCheckOK("AT+HWModeLED=" MODE_LED_BEHAVIOUR);
   }
 
   // Set module to DATA mode
-  if (DEBUG) Serial.println( F("Switching to DATA mode!") );
+  if (Serial) Serial.println( F("Switching to DATA mode!") );
   ble.setMode(BLUEFRUIT_MODE_DATA);
 }
 
+//===================================================
+// Battery
+//===================================================
 
 float getBatteryLevel() {
-  if (DEBUG) Serial.println("Getting battery voltage");
+  if (Serial) Serial.println("Getting battery voltage");
   float measuredvbat = analogRead(VBATPIN);
   measuredvbat *= 2;    // we divided by 2, so multiply back
   measuredvbat *= 3.3;  // Multiply by 3.3V, our reference voltage
