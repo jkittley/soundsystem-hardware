@@ -35,22 +35,22 @@
 bool DEBUG = true;  // Show debug messages
 
 // How long to stay in config mode after the last acknowlegement
-unsigned long stayInConfig = 1000 * 60; // 60 secs
+unsigned long configNoRelayMaxTime = 1000 * 60; // 60 secs
 
 // How long to wait for the relay node to respond to choose me requests befor returning to normal mode
 unsigned long waitForChooseMeAck = 1000 * 10; // 10 secs
 
 // Maximum time to spend in config mode - will exit config after x even if connected to Relay
-unsigned long max_time_in_config = 1000 * 60 * 2; // 2 minutes
+unsigned long maxTimeInConfigMode = 1000 * 60 * 2; // 2 minutes
 
 // Send interval
-int send_interval_normal = 4000; // ms in normal mode
-int send_interval_config = 1000; // ms in config mode
+int sendIntervalNormalMode = 4000; // ms in normal mode
+int sendIntervalConfigMode = 1000; // ms in config mode
 
 // LED Pins
-int redPin = 5;
-int greenPin = 10;
-int bluePin = 11;
+#define LED_PIN_R 5
+#define LED_PIN_G 10
+#define LED_PIN_B 11
 
 // Config button Pin
 int configButton = A3;
@@ -100,20 +100,19 @@ RFM69 radio(RF69_SPI_CS, RF69_IRQ_PIN, true, RF69_IRQ_NUM);
 #define ADC_SOUND_REF 65
 #define DB_SOUND_REF 41
 #define num_samples 256
-int sample_index = 0;
+int sampleIndex = 0;
 int samples[num_samples];
-int failure_count = 0;
+int sampleFailureCount = 0;
 
 // Payloads
 typedef struct {
-  uint8_t volume; // Volume
-  uint8_t battery; // Battery voltage
-  uint8_t reply; // Request Reply i.e. we are in config mode
+  uint8_t volume;   // Volume
+  uint8_t battery;  // Battery voltage
 } TXPayload;
 TXPayload sendPayload;
 
 typedef struct {
-  uint8_t volume; // Volume
+  uint8_t volume;  // Volume
   uint8_t battery; // Battery voltage
   uint8_t rssi;    // rssi
 } RXPayload;
@@ -125,16 +124,14 @@ typedef struct {
 ChooseMePayload chooseMePayload;
 
 // Timers
-unsigned long config_timer = 0;
-unsigned long config_started = 0;
-unsigned long choose_timer = 0;
-unsigned long last_sent = 0;
+unsigned long configNoRelayTimeout = 0;
+unsigned long configStartTime = 0;
+unsigned long configChooseMeTimeout = 0;
+unsigned long messageLastSent = 0;
 
 // Mode states
-bool is_in_config = false;
-bool config_ack = false;
-bool exit_after_next_msg = false;
-bool enter_after_next_msg = false;
+bool configModeRequested = false;
+bool configModeAccepted = false;
 bool buttonEnabled = true;
 
 //======================================================================================================
@@ -156,9 +153,9 @@ void setup() {
 
   // Initialize the radio
   radio.initialize(FREQUENCY, NODEID, NETWORKID);
-#ifdef IS_RFM69HW_HCW
-  radio.setHighPower(); //must include this only for RFM69HW/HCW!
-#endif
+  #ifdef IS_RFM69HW_HCW
+    radio.setHighPower(); //must include this only for RFM69HW/HCW!
+  #endif
   radio.setPowerLevel(RADIO_POWER);
 
   // Init Microphone
@@ -182,24 +179,26 @@ void loop() {
 
   // If the button is pressed then try to enter config mode
   if (digitalRead(configButton) == HIGH && buttonEnabled) {
+    
     // Disable buttong until tasks are done - stops debounce issues
     buttonEnabled = false;
     if (Serial) Serial.println("Switching mode");
+    
     // Stops interupts causing a crash - I think
     radio.sleep();
 
     // Show color
-    if (!is_in_config) setColor(0, 255, 0); // Green - let go of button
-    if (is_in_config) setColor(255, 0, 0); // Red - Let go of button
+    if (!configModeRequested) setColor(0, 255, 0); // Green - let go of button
+    if (configModeRequested) setColor(255, 0, 0); // Red - Let go of button
+    
     // Wait for button release
-    while (true) {
-      if (digitalRead(configButton) == LOW) break;
-    }
+    while (true) { if (digitalRead(configButton) == LOW) break; }
     setColor(0, 0, 0);
+    
     // Act
-    if (is_in_config) {
+    if (configModeRequested) {
       if (Serial) Serial.println("Exiting config mode - Button pressed");
-      endConfigMode();
+      endConfigMode(0);
     } else {
       if (Serial) Serial.println("Starting config mode - Button pressed");
       startConfigMode();
@@ -207,42 +206,39 @@ void loop() {
   }
 
   // Exit config mode if we have not had any replies from the relay node in the given period
-  if (!exit_after_next_msg && is_in_config && config_ack && config_timer < millis()) {
+  if (inConfigMode() && configNoRelayTimeout < millis()) {
     if (Serial) Serial.println("Exiting config mode - No ACKs from relay / No packets from server to forward");
-    endConfigMode();
+    endConfigMode(1);
   }
 
   // Exit config if time out reached - even if still connected
-  if (!exit_after_next_msg && is_in_config && config_ack && config_started + max_time_in_config < millis()) {
+  if (inConfigMode() && configStartTime + maxTimeInConfigMode < millis()) {
     if (Serial) Serial.println("Exiting config mode - Time limit reached");
-    endConfigMode();
+    endConfigMode(1);
   }
 
-
   // If the microphone has failed to get a reading x many times, reboot the node
-  if (failure_count > 10000) {
+  if (sampleFailureCount > 10000) {
     if (Serial) Serial.print("Resetting Microphone...");
     NVIC_SystemReset();
-    failure_count = 0;
+    sampleFailureCount = 0;
   }
 
   // Control send interval without using a delay - A delay in config mode prevents messages being passed from base to relay node
-  if ((!is_in_config && millis() > last_sent + send_interval_normal) || (is_in_config && millis() > last_sent + send_interval_config)) {
+  if (isTimeToSend()) {
 
     // If sampelling is complete
     int dB = getSample();
     if (dB > 0) {
 
       // Send data to relay node
-      sendPayload.reply   = is_in_config ? 1 : 0; // If in config mode, request a reply with RSSI included
       sendPayload.battery = getBatteryLevel();
       sendPayload.volume  = dB;
 
       if (Serial) {
-        Serial.println("Sending");
-        Serial.print("Vol dB: "); Serial.print(sendPayload.volume);
+        Serial.print("Sending");
+        Serial.print(" | Vol dB: "); Serial.print(sendPayload.volume);
         Serial.print(" | Bat: "); Serial.print(sendPayload.battery);
-        Serial.print(" | Reply: "); Serial.println(sendPayload.reply);
       }
 
       // Send the message to the base server
@@ -253,32 +249,33 @@ void loop() {
         if (radio.DATALEN == sizeof(RXPayload)) {
           
           // Forward this data to the BLE node
-          receivePayload = *(RXPayload*)radio.DATA;
-          if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload), retries, ackwait)) {
-            if (Serial)  Serial.println("ACK recieved (For TX to Relay)");
-
-            // Response from relay
-            if (radio.DATALEN == sizeof(ChooseMePayload)) { 
-                chooseMePayload = *(ChooseMePayload*)radio.DATA;
-
-                if (Serial) Serial.println(chooseMePayload.value);
-
-                // Thanks
-                if (chooseMePayload.value == 200) {
-                  // Sustain config mode because relay replied
-                  config_timer = millis() + stayInConfig;
-
-                // No thanks - not listening to you
-                } else if (chooseMePayload.value == 101) {
-                  config_timer = 0;
-                }
-                
+          if (inConfigMode()) { 
+            receivePayload = *(RXPayload*)radio.DATA;
+            if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload), retries, ackwait)) {
+              if (Serial)  Serial.println("ACK recieved (For TX to Relay)");
+  
+              // Response from relay
+              if (radio.DATALEN == sizeof(ChooseMePayload)) { 
+                  chooseMePayload = *(ChooseMePayload*)radio.DATA;
+  
+                  // Thanks
+                  if (chooseMePayload.value == 200) {
+                    // Sustain config mode because relay replied
+                    if (Serial) { Serial.println("Relay Accepted Message"); }
+                    configNoRelayTimeout = millis() + configNoRelayMaxTime;
+  
+                  // No thanks - not listening to you
+                  } else if (chooseMePayload.value < 200) {
+                    configNoRelayTimeout = 0;
+                    if (Serial) { Serial.print("Relay Rejected Message - "); Serial.println(chooseMePayload.value); }
+                  }
+                  
+              }
+              
+            } else {
+              if (Serial)  Serial.println("NO - ACK recieved (For TX to Relay)");
             }
-            
-            
 
-          } else {
-            if (Serial)  Serial.println("NO - ACK recieved (For TX to Relay)");
           }
           
         }
@@ -287,14 +284,8 @@ void loop() {
       }
 
       // Record when message sent
-      last_sent = millis();
+      messageLastSent = millis();
 
-      // If exit config mode has been requested then act on it now
-      if (exit_after_next_msg) {
-        actuallyExitConfigMode();
-      } else if (enter_after_next_msg) {
-        actuallyStartConfigMode();
-      }
 
     }
   }
@@ -305,42 +296,52 @@ void loop() {
 //===================================================
 
 void startConfigMode() {
-  setColor(0, 0, 180);
-  enter_after_next_msg = true;
-}
-
-void actuallyStartConfigMode() {
-  enter_after_next_msg = false;
-  exit_after_next_msg = false;
-
-  config_timer = millis() + stayInConfig * 5;
-  choose_timer = millis() + waitForChooseMeAck;
-  config_started = millis();
-  is_in_config = true;
-  config_ack = false;
+  configNoRelayTimeout = millis() + configNoRelayMaxTime * 2;
+  configChooseMeTimeout = millis() + waitForChooseMeAck;
+  configStartTime = millis();
+  configModeRequested = true;
+  configModeAccepted = false;
 
   // Ask relay if we can be chosen and wait for confirmation / error
-  while (!config_ack) {
+  while (!configModeAccepted) {
     setColor(0, 0, 255);
     if (Serial) Serial.println("Sending CHOOSEME");
     chooseMePayload.value = 10;
 
     radio.sleep();
 
-    if (radio.sendWithRetry(RELAYID, (const uint8_t*) &chooseMePayload, sizeof(chooseMePayload), retries, ackwait)) {
-      // If we get accepted
-      if (Serial) Serial.println("Got ACK for CHOOSEME");
-      setColor(0, 0, 255);
-      config_ack = true;
-      buttonEnabled = true;
-      return;
+    if (radio.sendWithRetry(RELAYID, (const uint8_t*) &chooseMePayload, sizeof(chooseMePayload), 0, ackwait)) {
+      
+      // Response from relay
+      if (radio.DATALEN == sizeof(ChooseMePayload)) { 
+          chooseMePayload = *(ChooseMePayload*)radio.DATA;
+
+          if (Serial) Serial.println(chooseMePayload.value);
+
+          // We got accepted
+          if (chooseMePayload.value == 200) {
+            if (Serial) Serial.println("Got ACK for CHOOSEME");
+            setColor(0, 0, 255);
+            configModeAccepted = true;
+            buttonEnabled = true;
+            return;
+
+          // No thanks
+          } else if (chooseMePayload.value < 200) {
+            if (Serial) { Serial.print("CHOOSEME Rejected - "); Serial.println(chooseMePayload.value); }
+            endConfigMode(chooseMePayload.value);
+            return;
+          }
+      }
     }
 
     // If we try for too long
-    if (choose_timer < millis()) {
-      endConfigMode();
+    if (configChooseMeTimeout < millis()) {
+      if (Serial) { Serial.println("CHOOSEME Timed Out"); }
+      endConfigMode(1);
       return;
     }
+    
     // Blink LED and delay befor next send
     for (int x = 5; x >= 0; x--) {
       setColor(0, 0, 0);
@@ -352,20 +353,33 @@ void actuallyStartConfigMode() {
 
 }
 
-void endConfigMode() {
-  exit_after_next_msg = true;
-  setColor(180, 0, 0);
-}
-
-void actuallyExitConfigMode() {
-  exit_after_next_msg = false;
-  enter_after_next_msg = false;
-  is_in_config = false;
-  config_ack = false;
-  config_timer = 0;
-  choose_timer = 0;
-  setColor(0, 0, 0);
+void endConfigMode(int code) {
+  configModeRequested = false;
+  configModeAccepted = false;
+  configNoRelayTimeout = 0;
+  configChooseMeTimeout = 0;
+  if (Serial) { Serial.print("Exiting config mode - code: "); Serial.print(code);  }
+  for (int i=0; i <= 5; i++){
+    switch (code) {
+      case 0:    // Button press to exit
+        setColor(0, 0, 0);
+        break;
+      case 1:    // Time out
+        setColor(0, 255, 0);
+        break;
+      case 101:  // Relay I'm not listening to you
+        setColor(0, 0, 255);
+        break;
+      case 102:    // Relay I'm not connected to BLE
+        setColor(0, 120, 120);
+        break;
+    }
+    delay(250);
+    setColor(255, 0, 0);
+    delay(250);
+  }
   buttonEnabled = true;
+  setColor(0, 0, 0);
 }
 
 //===================================================
@@ -393,9 +407,9 @@ void setColor(int red, int green, int blue) {
   green = 255 - green;
   blue = 255 - blue;
 #endif
-  analogWrite(redPin, red);
-  analogWrite(greenPin, green);
-  analogWrite(bluePin, blue);
+  analogWrite(LED_PIN_R, red);
+  analogWrite(LED_PIN_G, green);
+  analogWrite(LED_PIN_B, blue);
 }
 
 //===================================================
@@ -455,21 +469,21 @@ void printDebugInfo() {
 
 
 //===================================================
-// Get Audion sample
+// Get Audio sample
 //===================================================
 
 int getSample() {
   // We dont have enough samples yet
-  if (sample_index < num_samples) {
+  if (sampleIndex < num_samples) {
 
     int sample = I2S.read();
     if (sample != 0 && sample != -1) {
       // convert to 18 bit signed
       sample >>= 14;
-      samples[sample_index] = sample;
-      sample_index++;
+      samples[sampleIndex] = sample;
+      sampleIndex++;
     } else {
-      failure_count++;
+      sampleFailureCount++;
     }
 
     return 0;
@@ -496,10 +510,26 @@ int getSample() {
   }
 
   // Reset sampling
-  sample_index = 0;
-  failure_count = 0;
+  sampleIndex = 0;
+  sampleFailureCount = 0;
 
   // Calc dB
   return int(20 * log10((float)maxsample / (float)ADC_SOUND_REF) + DB_SOUND_REF);
 }
+
+//===================================================
+// Helpers
+//===================================================
+
+bool inConfigMode() {
+  return configModeRequested && configModeAccepted;
+}
+
+bool isTimeToSend() {
+ if (!configModeRequested && millis() > messageLastSent + sendIntervalNormalMode) return true;
+ if (configModeRequested && millis() > messageLastSent + sendIntervalConfigMode) return true;
+ return false;
+}
+
+
 

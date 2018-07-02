@@ -66,7 +66,6 @@ RFM69 radio(RF69_SPI_CS, RF69_IRQ_PIN, false, RF69_IRQ_NUM);
 typedef struct {
   uint8_t volume;  // Volume
   uint8_t battery; // Battery voltage
-  uint8_t reply; // Want Reply i.e. node is in config mode
 } RXPayload;
 RXPayload receivePayload;
 
@@ -115,32 +114,17 @@ void loop() {
       receivePayload = *(RXPayload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
 
       if (radio.ACKRequested()) {
-        if (receivePayload.reply == 1) {
-            if (DEBUG) Serial.println("- ACK sent with RSSI info");
-            sendPayload.volume = receivePayload.volume;
-            sendPayload.battery = receivePayload.battery;
-            sendPayload.rssi = abs(radio.RSSI);
-            // Cant use retry as the is an issue with forwarding and sending acks
-            radio.sendACK((const uint8_t*) &sendPayload, sizeof(sendPayload));
-          } else {
-            radio.sendACK();
-            Serial.println(" - ACK sent.");
-          }
+          if (DEBUG) Serial.println("- ACK sent with RSSI info");
+          sendPayload.volume = receivePayload.volume;
+          sendPayload.battery = receivePayload.battery;
+          sendPayload.rssi = abs(radio.RSSI);
+          // Cant use retry as the is an issue with forwarding and sending acks
+          radio.sendACK((const uint8_t*) &sendPayload, sizeof(sendPayload));
       }
-          
+
       // Send to BLE
       sendPayloadToSerial(radio.SENDERID, radio.RSSI);
       
-      // Send back RSSI if requested
-      if (receivePayload.reply == 1) {
-        delay(200);
-        if (DEBUG) Serial.print("# Sending back RSSI to node: "); Serial.println(radio.SENDERID);
-        sendPayload.volume = receivePayload.volume;
-        sendPayload.battery = receivePayload.battery;
-        sendPayload.rssi = abs(radio.RSSI);
-        // Cant use retry as the is an issue with forwarding and sending acks
-        radio.send(radio.SENDERID, (const uint8_t*) &sendPayload, sizeof(sendPayload));
-      }
     }
   }
 }
@@ -156,7 +140,6 @@ void sendPayloadToSerial(int sender, int rssi) {
   root["rssi"]   = rssi;
   root["pay_volume"]  = receivePayload.volume;
   root["pay_battery"] = float(receivePayload.battery) / 10.0;
-  root["pay_reply"] = receivePayload.reply;
   root.printTo(Serial);
   Serial.println();
   delay(250);
