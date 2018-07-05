@@ -10,7 +10,7 @@
 
 // **********************************************************************************
 
-#define NODEID        1   // This device's ID
+#define NODEID        3   // This device's ID
 #define BASEID        100 // Basestation (PI node)
 #define RELAYID       101 // The ID of the RFM69 to BLE Relay node
 #define NETWORKID     20
@@ -35,17 +35,17 @@
 bool DEBUG = true;  // Show debug messages
 
 // How long to stay in config mode after the last acknowlegement
-unsigned long configNoRelayMaxTime = 1000 * 60; // 60 secs
+unsigned long configNoRelayMaxTime = 1000 * 20; // 60 secs
 
 // How long to wait for the relay node to respond to choose me requests befor returning to normal mode
 unsigned long waitForChooseMeAck = 1000 * 10; // 10 secs
 
 // Maximum time to spend in config mode - will exit config after x even if connected to Relay
-unsigned long maxTimeInConfigMode = 1000 * 60 * 2; // 2 minutes
+unsigned long maxTimeInConfigMode = 1000 * 60 * 5; // 2 minutes
 
 // Send interval
-int sendIntervalNormalMode = 4000; // ms in normal mode
-int sendIntervalConfigMode = 1000; // ms in config mode
+int sendIntervalNormalMode = 8000; // ms in normal mode
+int sendIntervalConfigMode = 500; // ms in config mode
 
 // LED Pins
 #define LED_PIN_R 5
@@ -56,7 +56,7 @@ int sendIntervalConfigMode = 1000; // ms in config mode
 int configButton = A3;
 
 int retries = 2;
-int ackwait = 200;
+int ackwait = 400;
 
 // **********************************************************************************
 // **********************************************************************************
@@ -140,6 +140,15 @@ bool buttonEnabled = true;
 
 void setup() {
 
+  if (DEBUG) {
+    setColor(255, 0, 0);
+    delay(500);
+    setColor(0, 255, 0);
+    delay(500);
+    setColor(0, 0, 255);
+    delay(500);
+  }
+  
   //  Wait for Serial if we are in debug
   if (DEBUG) {
     setColor(255, 255, 255);
@@ -166,7 +175,7 @@ void setup() {
 
   // Button
   pinMode(configButton, OUTPUT);
-
+  
   //
   if (Serial) printDebugInfo();
 }
@@ -219,7 +228,7 @@ void loop() {
 
   // If the microphone has failed to get a reading x many times, reboot the node
   if (sampleFailureCount > 10000) {
-    if (Serial) Serial.print("Resetting Microphone...");
+    if (Serial) Serial.println("Resetting Microphone...");
     NVIC_SystemReset();
     sampleFailureCount = 0;
   }
@@ -238,7 +247,7 @@ void loop() {
       if (Serial) {
         Serial.print("Sending");
         Serial.print(" | Vol dB: "); Serial.print(sendPayload.volume);
-        Serial.print(" | Bat: "); Serial.print(sendPayload.battery);
+        Serial.print(" | Bat: "); Serial.println(sendPayload.battery);
       }
 
       // Send the message to the base server

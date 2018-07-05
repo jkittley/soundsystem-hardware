@@ -150,8 +150,8 @@ void loop() {
 
   if (radio.receiveDone()) {
 
-    if (Serial) Serial.println("Message received");
-
+    if (Serial) { Serial.print("Message received from node: "); Serial.println(radio.SENDERID); }
+    
     // Choose me
     if (radio.DATALEN == sizeof(ChooseMePayload)) {
       if (Serial) Serial.println("CHOOSE ME request received");
@@ -170,7 +170,7 @@ void loop() {
       payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
 
       // Send to BLE if we are listening to this node
-      if (listening_to_node == radio.SENDERID) sendPayloadToBLE(this_battery);
+      if (listening_to_node == radio.SENDERID) sendPayloadToBLE(radio.SENDERID, this_battery);
 
       if (radio.ACKRequested()) {
         chooseMePayload.value = getResponseCode();
@@ -194,15 +194,19 @@ int getResponseCode() {
   return 101;
 }
 
-void sendPayloadToBLE(float this_battery) {
+void sendPayloadToBLE(int sender, float this_battery) {
   float sendDB = max(0, min(100, 100 * ( (payload.volume - min_db) / (max_db - min_db) ) ));
   float sendRSSI = 100 - max(0, min(100, 100 * ( (abs(payload.rssi) - best_sig) / (worst_sig - best_sig) ) ));
   float node_battery = float(payload.battery) / 10.0;
-  String s = "data=" + String(node_battery) + "," + String(sendRSSI) + "," + String(sendDB) + "," + String(this_battery) + ",0";
+  String d = "d=" + String(sender) + "," + String(sendRSSI) + "," + String(sendDB) + ",";
+  String b = "b=" + String(sender) + "," + String(node_battery) + "," +  String(this_battery) + ",";
   // Send input data to host via Bluefruit
-  if (Serial) Serial.println(s);
+  if (Serial) Serial.println(d);
+  if (Serial) Serial.println(b);
   if (ble.isConnected()) {
-    ble.print(s);
+    ble.print(d);
+    delay(50);
+    ble.print(b);
     if (Serial) Serial.println("Sent via BLE");
   }
 }
