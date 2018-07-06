@@ -10,7 +10,7 @@
 
 // **********************************************************************************
 
-#define NODEID        3   // This device's ID
+#define NODEID        13   // This device's ID
 #define BASEID        100 // Basestation (PI node)
 #define RELAYID       101 // The ID of the RFM69 to BLE Relay node
 #define NETWORKID     20
@@ -238,68 +238,93 @@ void loop() {
 
     // If sampelling is complete
     int dB = getSample();
+
     if (dB > 0) {
-
       // Send data to relay node
-      sendPayload.battery = getBatteryLevel();
+      sendPayload.battery = 0; //getBatteryLevel();
       sendPayload.volume  = dB;
-
+  
       if (Serial) {
         Serial.print("Sending");
         Serial.print(" | Vol dB: "); Serial.print(sendPayload.volume);
         Serial.print(" | Bat: "); Serial.println(sendPayload.battery);
       }
-
+  
       // Send the message to the base server
       if (radio.sendWithRetry(BASEID, (const uint8_t*) &sendPayload, sizeof(sendPayload), retries, ackwait)) {
-        if (Serial)  Serial.println("ACK recieved (For TX to Base)");
+          if (Serial)  Serial.println("--- ACK recieved (For TX to Base)");
+  
+          //
+          // ACK RECEIVED FROM BASE STATION
+          //
+          
+          // Forward this data to the BLE node
+          if (inConfigMode() && radio.DATALEN == sizeof(RXPayload)) {
 
-        // Read the ACK, does it contain RSSI data?
-        if (radio.DATALEN == sizeof(RXPayload)) {
+              if (Serial) Serial.println("Forwarding Message to Relay Node");
+              receivePayload = *(RXPayload*)radio.DATA;
+              forwardToRelayNode();
+          }
+            
+      } else {
+          if (Serial)  Serial.println("--- NO ACK recieved (For TX to Base)");
+          
+          //
+          // NO RESPONSE RECEIVED FROM BASE STATION
+          //
           
           // Forward this data to the BLE node
           if (inConfigMode()) { 
-            receivePayload = *(RXPayload*)radio.DATA;
-            if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload), retries, ackwait)) {
-              if (Serial)  Serial.println("ACK recieved (For TX to Relay)");
-  
-              // Response from relay
-              if (radio.DATALEN == sizeof(ChooseMePayload)) { 
-                  chooseMePayload = *(ChooseMePayload*)radio.DATA;
-  
-                  // Thanks
-                  if (chooseMePayload.value == 200) {
-                    // Sustain config mode because relay replied
-                    if (Serial) { Serial.println("Relay Accepted Message"); }
-                    configNoRelayTimeout = millis() + configNoRelayMaxTime;
-  
-                  // No thanks - not listening to you
-                  } else if (chooseMePayload.value < 200) {
-                    configNoRelayTimeout = 0;
-                    if (Serial) { Serial.print("Relay Rejected Message - "); Serial.println(chooseMePayload.value); }
-                  }
-                  
-              }
-              
-            } else {
-              if (Serial)  Serial.println("NO - ACK recieved (For TX to Relay)");
-            }
 
+              if (Serial) Serial.println("Creating message to send to Relay Node");
+              receivePayload.volume = dB;
+              receivePayload.rssi = -100;
+              receivePayload.battery = 10;
+              forwardToRelayNode();
+  
           }
-          
-        }
-      } else {
-        if (Serial)  Serial.println("NO ACK recieved (For TX to Base)");
+  
       }
-
+  
       // Record when message sent
       messageLastSent = millis();
-
-
+  
     }
   }
 }
 
+void forwardToRelayNode() {
+
+  if (Serial) Serial.println("Data to forward");
+  if (Serial) Serial.println(receivePayload.volume);
+  if (Serial) Serial.println(receivePayload.rssi);
+  if (Serial) Serial.println(receivePayload.battery);
+  
+  if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload), retries, ackwait)) {
+      if (Serial)  Serial.println("ACK recieved (For TX to Relay)");
+      
+      // Response from relay
+      if (radio.DATALEN == sizeof(ChooseMePayload)) { 
+            chooseMePayload = *(ChooseMePayload*)radio.DATA;
+
+            // Thanks
+            if (chooseMePayload.value == 200) {
+              // Sustain config mode because relay replied
+              if (Serial) { Serial.println("Relay Accepted Message"); }
+              configNoRelayTimeout = millis() + configNoRelayMaxTime;
+
+            // No thanks - not listening to you
+            } else if (chooseMePayload.value < 200) {
+              configNoRelayTimeout = 0;
+              if (Serial) { Serial.print("Relay Rejected Message - "); Serial.println(chooseMePayload.value); }
+            }
+              
+      } else {
+        if (Serial)  Serial.println("Invalid Payload recieved (For TX to Relay)");
+      }
+  }
+}
+  
 //===================================================
 // Mode Control
 //===================================================
@@ -311,15 +336,7 @@ void startConfigMode() {
   configModeRequested = true;
   configModeAccepted = false;
 
-  // Ask relay if we can be chosen and wait for confirmation / error
-  while (!configModeAccepted) {
-    setColor(0, 0, 255);
-    if (Serial) Serial.println("Sending CHOOSEME");
-    chooseMePayload.value = 10;
-
-    radio.sleep();
-
-    if (radio.sendWithRetry(RELAYID, (const uint8_t*) &chooseMePayload, sizeof(chooseMePayload), 0, ackwait)) {
+    if (radio.sendWithRetry(RELAYID, (const uint8_t*) &chooseMePayload, sizeof(chooseMePayload), 3, ackwait)) {
       
       // Response from relay
       if (radio.DATALEN == sizeof(ChooseMePayload)) { 
@@ -329,7 +346,7 @@ void startConfigMode() {
 
           // We got accepted
           if (chooseMePayload.value == 200) {
-            if (Serial) Serial.println("Got ACK for CHOOSEME");
+            if (Serial) Serial.println("CHOOSEME - Got ACK");
             setColor(0, 0, 255);
             configModeAccepted = true;
             buttonEnabled = true;
@@ -341,33 +358,27 @@ void startConfigMode() {
             endConfigMode(chooseMePayload.value);
             return;
           }
+      } else {
+        if (Serial)  Serial.println("CHOOSEME - Invalid chooseMePayload response");
+        endConfigMode(1);
       }
-    }
+      
+    } else {
+        if (Serial)  Serial.println("CHOOSEME - NO ACK recieved (For TX to Relay)");
+        radio.sleep();
+        delay(50);
+        endConfigMode(1);
+    }    
+ }
 
-    // If we try for too long
-    if (configChooseMeTimeout < millis()) {
-      if (Serial) { Serial.println("CHOOSEME Timed Out"); }
-      endConfigMode(1);
-      return;
-    }
-    
-    // Blink LED and delay befor next send
-    for (int x = 5; x >= 0; x--) {
-      setColor(0, 0, 0);
-      delay(250);
-      setColor(0, 0, 255);
-      delay(250);
-    }
-  }
 
-}
 
 void endConfigMode(int code) {
   configModeRequested = false;
   configModeAccepted = false;
   configNoRelayTimeout = 0;
   configChooseMeTimeout = 0;
-  if (Serial) { Serial.print("Exiting config mode - code: "); Serial.print(code);  }
+  if (Serial) { Serial.print("Exiting config mode - code: "); Serial.println(code);  }
   for (int i=0; i <= 5; i++){
     switch (code) {
       case 0:    // Button press to exit

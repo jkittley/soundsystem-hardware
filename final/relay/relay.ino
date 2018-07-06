@@ -169,6 +169,10 @@ void loop() {
 
       payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
 
+      if (Serial) Serial.print("Volume: ");  Serial.println(payload.volume);
+      if (Serial) Serial.print("RSSI: "); Serial.println(payload.rssi);
+      if (Serial) Serial.print("Battery: "); Serial.println(payload.battery);
+      
       // Send to BLE if we are listening to this node
       if (listening_to_node == radio.SENDERID) sendPayloadToBLE(radio.SENDERID, this_battery);
 
