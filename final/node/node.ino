@@ -56,7 +56,7 @@ int sendIntervalConfigMode = 500; // ms in config mode
 int configButton = A3;
 
 int retries = 2;
-int ackwait = 400;
+int ackwait = 300;
 
 // **********************************************************************************
 // **********************************************************************************
@@ -240,8 +240,11 @@ void loop() {
     int dB = getSample();
 
     if (dB > 0) {
+
+      float batt = getBatteryLevel();
+      
       // Send data to relay node
-      sendPayload.battery = 0; //getBatteryLevel();
+      sendPayload.battery = batt;
       sendPayload.volume  = dB;
   
       if (Serial) {
@@ -278,8 +281,8 @@ void loop() {
 
               if (Serial) Serial.println("Creating message to send to Relay Node");
               receivePayload.volume = dB;
-              receivePayload.rssi = -100;
-              receivePayload.battery = 10;
+              receivePayload.rssi = 90;
+              receivePayload.battery = batt;
               forwardToRelayNode();
   
           }
@@ -379,25 +382,26 @@ void endConfigMode(int code) {
   configNoRelayTimeout = 0;
   configChooseMeTimeout = 0;
   if (Serial) { Serial.print("Exiting config mode - code: "); Serial.println(code);  }
-  for (int i=0; i <= 5; i++){
-    switch (code) {
-      case 0:    // Button press to exit
-        setColor(0, 0, 0);
-        break;
-      case 1:    // Time out
-        setColor(0, 255, 0);
-        break;
-      case 101:  // Relay I'm not listening to you
-        setColor(0, 0, 255);
-        break;
-      case 102:    // Relay I'm not connected to BLE
-        setColor(0, 120, 120);
-        break;
-    }
-    delay(250);
-    setColor(255, 0, 0);
-    delay(250);
+  
+  switch (code) {
+    case 0:    // Button press to exit
+      if (Serial) { Serial.println("Button Press - Connection to Relay terminated"); }
+      setColor(0, 0, 0);
+      break;
+    case 1:    // Time out
+      if (Serial) { Serial.println("Time Out - Connection to Relay failed"); }
+      setColor(255, 0, 0);
+      break;
+    case 101:  // Relay I'm not listening to you
+      if (Serial) { Serial.println("Not listening to you anymore - Connection to Relay terminated"); }
+      setColor(255, 0, 255);
+      break;
+    case 102:    // Relay I'm not connected to BLE
+      if (Serial) { Serial.println("No BLE Tablet - Connection to Relay terminated"); }
+      setColor(0, 0, 255);
+      break;
   }
+  delay(500);  
   buttonEnabled = true;
   setColor(0, 0, 0);
 }

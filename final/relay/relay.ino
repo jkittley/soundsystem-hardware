@@ -83,6 +83,7 @@ RFM69 radio(RF69_SPI_CS, RF69_IRQ_PIN, false, RF69_IRQ_NUM);
 Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
 
 int listening_to_node = 0;
+float this_battery = 0;
 
 // Define payloads
 typedef struct {
@@ -97,7 +98,14 @@ typedef struct {
 } ChooseMePayload;
 ChooseMePayload chooseMePayload;
 
-float this_battery = 0;
+// Define struct for update payload
+typedef struct {
+  char key[20]; // command
+  uint8_t value; // Battery voltage
+} Update;
+Update upd;
+
+
 
 //===================================================
 // Setup
@@ -124,13 +132,15 @@ void setup() {
 
   // Initialize the radio
   radio.initialize(FREQUENCY, NODEID, NETWORKID);
-#ifdef IS_RFM69HW_HCW
-  radio.setHighPower(); //must include this only for RFM69HW/HCW!
-#endif
-#ifdef ENCRYPTKEY
-  radio.encrypt(ENCRYPTKEY);
-#endif
-
+  #ifdef IS_RFM69HW_HCW
+    radio.setHighPower(); //must include this only for RFM69HW/HCW!
+  #endif
+  #ifdef ENCRYPTKEY
+    radio.encrypt(ENCRYPTKEY);
+  #endif
+  
+  if (Serial) Serial.println("Radio Initialised");
+  
   // Debug
   if (DEBUG) printDebugInfo();
 
@@ -146,18 +156,18 @@ void setup() {
 
 
 void loop() {
-
-
+  
   if (radio.receiveDone()) {
 
     if (Serial) { Serial.print("Message received from node: "); Serial.println(radio.SENDERID); }
     
     // Choose me
     if (radio.DATALEN == sizeof(ChooseMePayload)) {
+      
       if (Serial) Serial.println("CHOOSE ME request received");
-      listening_to_node = radio.SENDERID;
-      if (Serial) Serial.println("Listening now to node");
-      if (Serial) Serial.println(listening_to_node);
+      listening_to_node = 1 * radio.SENDERID;
+      if (Serial) { Serial.print("Listening now to node: "); Serial.println(listening_to_node); }
+      
       if (radio.ACKRequested()) {
         chooseMePayload.value = getResponseCode();
         radio.sendACK((const uint8_t*) &chooseMePayload, sizeof(chooseMePayload));
@@ -169,19 +179,16 @@ void loop() {
 
       payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
 
-      if (Serial) Serial.print("Volume: ");  Serial.println(payload.volume);
-      if (Serial) Serial.print("RSSI: "); Serial.println(payload.rssi);
-      if (Serial) Serial.print("Battery: "); Serial.println(payload.battery);
+      int sender = radio.SENDERID;
       
-      // Send to BLE if we are listening to this node
-      if (listening_to_node == radio.SENDERID) sendPayloadToBLE(radio.SENDERID, this_battery);
-
       if (radio.ACKRequested()) {
         chooseMePayload.value = getResponseCode();
         radio.sendACK((const uint8_t*) &chooseMePayload, sizeof(chooseMePayload));
         if (Serial) Serial.println(" - ACK sent.");
-      }
-
+      }      
+      // Send to BLE if we are listening to this node
+      if (listening_to_node == sender) sendPayloadToBLE(sender, this_battery);
+      
       this_battery = getBatteryLevel();
 
       // Unknown struct
@@ -199,8 +206,13 @@ int getResponseCode() {
 }
 
 void sendPayloadToBLE(int sender, float this_battery) {
+
+  if (Serial) Serial.print("Volume: ");  Serial.println(payload.volume);
+  if (Serial) Serial.print("RSSI: "); Serial.println(payload.rssi);
+  if (Serial) Serial.print("Battery: "); Serial.println(payload.battery);
+  
   float sendDB = max(0, min(100, 100 * ( (payload.volume - min_db) / (max_db - min_db) ) ));
-  float sendRSSI = 100 - max(0, min(100, 100 * ( (abs(payload.rssi) - best_sig) / (worst_sig - best_sig) ) ));
+  float sendRSSI = 100 - max(0, min(100, 100 * ( (payload.rssi - best_sig) / (worst_sig - best_sig) ) ));
   float node_battery = float(payload.battery) / 10.0;
   String d = "d=" + String(sender) + "," + String(sendRSSI) + "," + String(sendDB) + ",";
   String b = "b=" + String(sender) + "," + String(node_battery) + "," +  String(this_battery) + ",";
@@ -226,7 +238,7 @@ void resetRadio() {
   digitalWrite(RF69_RESET, HIGH);
   delay(20);
   digitalWrite(RF69_RESET, LOW);
-  delay(500);
+  delay(1000);
   if (Serial) Serial.println(" complete");
 }
 
@@ -293,13 +305,6 @@ String getValue(String data, char separator, int index) {
 //===================================================
 // BLE
 //===================================================
-
-// Define struct for update payload
-typedef struct {
-  char key[20]; // command
-  uint8_t value; // Battery voltage
-} Update;
-Update upd;
 
 void listenToBLE() {
   String key = "";
