@@ -153,7 +153,11 @@ void setup() {
 // Main loop
 //===================================================
 
-
+// Responses
+// 101 - Not listening to you
+// 102 - BLE not connected
+// 103 - Invalid Payload
+// 200 - OK
 
 void loop() {
   
@@ -164,7 +168,8 @@ void loop() {
     // Choose me
     if (radio.DATALEN == sizeof(ChooseMePayload)) {
       
-      if (Serial) Serial.println("CHOOSE ME request received");
+      if (Serial) Serial.println("its CHOOSEME");
+      
       listening_to_node = 1 * radio.SENDERID;
       if (Serial) { Serial.print("Listening now to node: "); Serial.println(listening_to_node); }
       
@@ -177,23 +182,31 @@ void loop() {
       // Actual data
     } else if (radio.DATALEN == sizeof(Payload)) {
 
-      payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
+      if (Serial) Serial.println("its DATA");
 
       int sender = radio.SENDERID;
+      payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
       
       if (radio.ACKRequested()) {
         chooseMePayload.value = getResponseCode();
         radio.sendACK((const uint8_t*) &chooseMePayload, sizeof(chooseMePayload));
         if (Serial) Serial.println(" - ACK sent.");
-      }      
+      }
+      
       // Send to BLE if we are listening to this node
       if (listening_to_node == sender) sendPayloadToBLE(sender, this_battery);
       
       this_battery = getBatteryLevel();
 
-      // Unknown struct
+    
+    // Unknown struct
     } else {
-      if (Serial) Serial.println("# Invalid payload received, not matching Payload struct. -- ");
+      if (Serial) Serial.println("Its an invalid payload");
+      if (radio.ACKRequested()) {
+        chooseMePayload.value = 103;
+        radio.sendACK((const uint8_t*) &chooseMePayload, sizeof(chooseMePayload));
+        if (Serial) Serial.println(" - ACK sent.");
+      }
     }
 
   }

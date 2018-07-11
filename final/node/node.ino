@@ -310,6 +310,12 @@ void forwardToRelayNode() {
       if (radio.DATALEN == sizeof(ChooseMePayload)) { 
             chooseMePayload = *(ChooseMePayload*)radio.DATA;
 
+            // Possible Responses from Relay
+            // 101 - Not listening to you
+            // 102 - BLE not connected
+            // 103 - Invalid Payload
+            // 200 - OK
+
             // Thanks
             if (chooseMePayload.value == 200) {
               // Sustain config mode because relay replied
@@ -317,10 +323,10 @@ void forwardToRelayNode() {
               configNoRelayTimeout = millis() + configNoRelayMaxTime;
 
             // No thanks - not listening to you
-            } else if (chooseMePayload.value < 200) {
+            } else {
               configNoRelayTimeout = 0;
               if (Serial) { Serial.print("Relay Rejected Message - "); Serial.println(chooseMePayload.value); }
-            }
+            } 
               
       } else {
         if (Serial)  Serial.println("Invalid Payload recieved (For TX to Relay)");
@@ -339,7 +345,7 @@ void startConfigMode() {
   configModeRequested = true;
   configModeAccepted = false;
 
-    if (radio.sendWithRetry(RELAYID, (const uint8_t*) &chooseMePayload, sizeof(chooseMePayload), 3, ackwait)) {
+  if (radio.sendWithRetry(RELAYID, (const uint8_t*) &chooseMePayload, sizeof(chooseMePayload), 3, ackwait)) {
       
       // Response from relay
       if (radio.DATALEN == sizeof(ChooseMePayload)) { 
@@ -361,6 +367,7 @@ void startConfigMode() {
             endConfigMode(chooseMePayload.value);
             return;
           }
+          
       } else {
         if (Serial)  Serial.println("CHOOSEME - Invalid chooseMePayload response");
         endConfigMode(1);
@@ -368,10 +375,11 @@ void startConfigMode() {
       
     } else {
         if (Serial)  Serial.println("CHOOSEME - NO ACK recieved (For TX to Relay)");
-        radio.sleep();
-        delay(50);
+//        radio.sleep();
+//        delay(50);
         endConfigMode(1);
     }    
+    
  }
 
 
