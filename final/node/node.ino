@@ -38,17 +38,17 @@
 bool DEBUG = true;  // Show debug messages
 
 // How long to stay in config mode after the last acknowlegement
-unsigned long configNoRelayMaxTime = 1000 * 20; // 60 secs
+unsigned long configNoRelayMaxTime = 1000 * 20; // 20 secs
 
 // How long to wait for the relay node to respond to choose me requests befor returning to normal mode
 unsigned long waitForChooseMeAck = 1000 * 10; // 10 secs
 
 // Maximum time to spend in config mode - will exit config after x even if connected to Relay
-unsigned long maxTimeInConfigMode = 1000 * 60 * 5; // 2 minutes
+unsigned long maxTimeInConfigMode = 1000 * 60 * 5; // 5 minutes
 
 // Send interval
 int sendIntervalNormalMode = 8000; // ms in normal mode
-int sendIntervalConfigMode = 500; // ms in config mode
+int sendIntervalConfigMode = 125; // ms in config mode
 
 // LED Pins
 #define LED_PIN_R 5
@@ -342,14 +342,16 @@ void forwardToRelay(JsonObject& json) {
       JsonObject& relayJson = jsonBuffer.parseObject((char*)radioBuffer);
       if (relayJson.success()) {
 
-        if (Serial) Serial.print("RELAY REPLY: ");
-        if (Serial) relayJson.printTo(Serial);
+        if (Serial) { Serial.print("RELAY REPLY: "); relayJson.printTo(Serial); Serial.println(""); }
       
-        if (relayJson["msg"] != "OK") {
+        if (relayJson["msg"] == "OK") {
+
+          configNoRelayTimeout = millis() + sendIntervalConfigMode + configNoRelayMaxTime;
+        
+        } else {
           
           endConfigMode(relayJson["msg"]);
-          configNoRelayTimeout = millis() + configNoRelayMaxTime;
-       
+          
         }
 
       } else {
@@ -377,7 +379,7 @@ void forwardToRelay(JsonObject& json) {
 //===================================================
 
 void startConfigMode() {
-  configNoRelayTimeout = millis() + configNoRelayMaxTime * 2;
+  configNoRelayTimeout = millis() + sendIntervalConfigMode + configNoRelayMaxTime;
   configChooseMeTimeout = millis() + waitForChooseMeAck;
   configStartTime = millis();
   configModeRequested = true;
@@ -451,8 +453,10 @@ void endConfigMode(String reason) {
   configChooseMeTimeout = 0;
   
   if (Serial) {
+    Serial.println("==============================");
     Serial.print("Exiting config mode - reason: ");
     Serial.println(reason);
+    Serial.println("==============================");
   }
 
   setColor(255, 0, 0);
