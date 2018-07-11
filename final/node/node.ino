@@ -5,8 +5,11 @@
 //
 // **********************************************************************************
 
-#include <RFM69.h>              // https://www.github.com/lowpowerlab/rfm69
+#include <RHReliableDatagram.h>
+#include <RH_RF69.h>
+#include <SPI.h>
 #include <I2S.h>
+#include <ArduinoJson.h>
 
 // **********************************************************************************
 
@@ -21,10 +24,10 @@
 //#define USING_RFM69_WING
 
 // The transmision frequency of the baord.
-#define FREQUENCY      RF69_433MHZ
+#define FREQUENCY      433.0
 
 // Uncomment if this board is the RFM69HW/HCW not the RFM69W/CW
-#define IS_RFM69HW_HCW
+#define IS_RFM69HW_HCW true
 
 // Serial board rate - just used to print debug messages
 #define SERIAL_BAUD   115200
@@ -58,6 +61,13 @@ int configButton = A3;
 int retries = 2;
 int ackwait = 300;
 
+// Conversion to percentage
+float min_db = 35; // Background level
+float max_db = 90; // Everything above this is 100%
+float default_sig = abs(-91);
+float worst_sig = abs(-90);
+float best_sig  = abs(-25);
+
 // **********************************************************************************
 // **********************************************************************************
 //
@@ -90,11 +100,10 @@ int ackwait = 300;
 #endif
 
 // Create Radio
-#ifdef ENABLE_ATC
-RFM69_ATC radio(RF69_SPI_CS, RF69_IRQ_PIN, false, RF69_IRQ_NUM);
-#else
-RFM69 radio(RF69_SPI_CS, RF69_IRQ_PIN, true, RF69_IRQ_NUM);
-#endif
+RH_RF69 rf69(RF69_SPI_CS, RF69_IRQ_PIN);
+// Class to manage message delivery and receipt, using the driver declared above
+RHReliableDatagram rf69_manager(rf69, NODEID);
+uint8_t radioBuffer[RH_RF69_MAX_MESSAGE_LEN];
 
 // Audio
 #define ADC_SOUND_REF 65
@@ -103,25 +112,6 @@ RFM69 radio(RF69_SPI_CS, RF69_IRQ_PIN, true, RF69_IRQ_NUM);
 int sampleIndex = 0;
 int samples[num_samples];
 int sampleFailureCount = 0;
-
-// Payloads
-typedef struct {
-  uint8_t volume;   // Volume
-  uint8_t battery;  // Battery voltage
-} TXPayload;
-TXPayload sendPayload;
-
-typedef struct {
-  uint8_t volume;  // Volume
-  uint8_t battery; // Battery voltage
-  uint8_t rssi;    // rssi
-} RXPayload;
-RXPayload receivePayload;
-
-typedef struct {
-  uint8_t value;  // Volume
-} ChooseMePayload;
-ChooseMePayload chooseMePayload;
 
 // Timers
 unsigned long configNoRelayTimeout = 0;
@@ -148,7 +138,7 @@ void setup() {
     setColor(0, 0, 255);
     delay(500);
   }
-  
+
   //  Wait for Serial if we are in debug
   if (DEBUG) {
     setColor(255, 255, 255);
@@ -161,11 +151,22 @@ void setup() {
   }
 
   // Initialize the radio
-  radio.initialize(FREQUENCY, NODEID, NETWORKID);
-  #ifdef IS_RFM69HW_HCW
-    radio.setHighPower(); //must include this only for RFM69HW/HCW!
-  #endif
-  radio.setPowerLevel(RADIO_POWER);
+  if (!rf69_manager.init()) {
+    Serial.println("RFM69 radio init failed");
+    while (1);
+  }
+  if (!rf69.setFrequency(FREQUENCY)) {
+    Serial.println("setFrequency failed");
+    while (1);
+  }
+
+  rf69.setTxPower(20, IS_RFM69HW_HCW);  // range from 14-20 for power, 2nd arg must be true for 69HCW
+
+  // The encryption key has to be the same as the one in the server
+  uint8_t key[] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08
+                  };
+  rf69.setEncryptionKey(key);
 
   // Init Microphone
   if (!I2S.begin(I2S_PHILIPS_MODE, 16000, 32)) {
@@ -175,7 +176,7 @@ void setup() {
 
   // Button
   pinMode(configButton, OUTPUT);
-  
+
   //
   if (Serial) printDebugInfo();
 }
@@ -184,30 +185,30 @@ void setup() {
 // Main loop
 //======================================================================================================
 
+
+
 void loop() {
 
   // If the button is pressed then try to enter config mode
   if (digitalRead(configButton) == HIGH && buttonEnabled) {
-    
+
     // Disable buttong until tasks are done - stops debounce issues
     buttonEnabled = false;
     if (Serial) Serial.println("Switching mode");
-    
-    // Stops interupts causing a crash - I think
-    radio.sleep();
 
     // Show color
     if (!configModeRequested) setColor(0, 255, 0); // Green - let go of button
     if (configModeRequested) setColor(255, 0, 0); // Red - Let go of button
-    
+
     // Wait for button release
-    while (true) { if (digitalRead(configButton) == LOW) break; }
+    while (true) {
+      if (digitalRead(configButton) == LOW) break;
+    }
     setColor(0, 0, 0);
-    
+
     // Act
     if (configModeRequested) {
-      if (Serial) Serial.println("Exiting config mode - Button pressed");
-      endConfigMode(0);
+      endConfigMode("Exiting config mode - Button pressed");
     } else {
       if (Serial) Serial.println("Starting config mode - Button pressed");
       startConfigMode();
@@ -216,124 +217,161 @@ void loop() {
 
   // Exit config mode if we have not had any replies from the relay node in the given period
   if (inConfigMode() && configNoRelayTimeout < millis()) {
-    if (Serial) Serial.println("Exiting config mode - No ACKs from relay / No packets from server to forward");
-    endConfigMode(1);
+    endConfigMode("No ACK from relay / No packets from server to forward");
   }
 
   // Exit config if time out reached - even if still connected
   if (inConfigMode() && configStartTime + maxTimeInConfigMode < millis()) {
-    if (Serial) Serial.println("Exiting config mode - Time limit reached");
-    endConfigMode(1);
+    if (Serial) Serial.println();
+    endConfigMode("Time limit reached");
   }
 
   // If the microphone has failed to get a reading x many times, reboot the node
   if (sampleFailureCount > 10000) {
-    if (Serial) Serial.println("Resetting Microphone...");
+    if (Serial) Serial.println("Resetting device...");
     NVIC_SystemReset();
     sampleFailureCount = 0;
   }
 
-  // Control send interval without using a delay - A delay in config mode prevents messages being passed from base to relay node
   if (isTimeToSend()) {
-
-    // If sampelling is complete
     int dB = getSample();
+    if (dB > 0) sendPacket(dB);
+  }
+}
 
-    if (dB > 0) {
+//===================================================
+// Send Packet to Base
+//===================================================
 
-      float batt = getBatteryLevel();
-      
-      // Send data to relay node
-      sendPayload.battery = batt;
-      sendPayload.volume  = dB;
-  
-      if (Serial) {
-        Serial.print("Sending");
-        Serial.print(" | Vol dB: "); Serial.print(sendPayload.volume);
-        Serial.print(" | Bat: "); Serial.println(sendPayload.battery);
+void sendPacket(int dB) {
+
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& txJson = jsonBuffer.createObject();
+  txJson["t"] = "data";
+  txJson["r"] = default_sig;
+  txJson["b"] = getBatteryLevel();
+  txJson["v"] = dB;
+ 
+  if (Serial) {
+    Serial.print("JSON: ");
+    txJson.printTo(Serial);
+    Serial.println("");
+  }
+  char radiopacket[RH_RF69_MAX_MESSAGE_LEN];
+  txJson.printTo(radiopacket);
+
+  if (Serial) Serial.print("BUFFER: "); Serial.println((char*)radiopacket); 
+
+  // Send a message
+  if (rf69_manager.sendtoWait((uint8_t *)radiopacket, strlen(radiopacket), BASEID)) {
+    
+    // Response
+    uint8_t len = sizeof(radioBuffer);
+    uint8_t from;   
+    if (rf69_manager.recvfromAckTimeout(radioBuffer, &len, 2000, &from)) {
+
+      if (Serial) Serial.println("Message Sent");
+
+      // Now when we see a reply forward the packet with the RSSI to the relay node
+      if (inConfigMode()) {
+        radioBuffer[len] = 0; // zero out remaining string
+        StaticJsonBuffer<200> jsonBuffer;
+        JsonObject& rxJson = jsonBuffer.parseObject((char*)radioBuffer);
+        forwardToRelay(rxJson);
       }
-  
-      // Send the message to the base server
-      if (radio.sendWithRetry(BASEID, (const uint8_t*) &sendPayload, sizeof(sendPayload), retries, ackwait)) {
-          if (Serial)  Serial.println("--- ACK recieved (For TX to Base)");
-  
-          //
-          // ACK RECEIVED FROM BASE STATION
-          //
-          
-          // Forward this data to the BLE node
-          if (inConfigMode() && radio.DATALEN == sizeof(RXPayload)) {
-
-              if (Serial) Serial.println("Forwarding Message to Relay Node");
-              receivePayload = *(RXPayload*)radio.DATA;
-              forwardToRelayNode();
-          }
-            
-      } else {
-          if (Serial)  Serial.println("--- NO ACK recieved (For TX to Base)");
-          
-          //
-          // NO RESPONSE RECEIVED FROM BASE STATION
-          //
-          
-          // Forward this data to the BLE node
-          if (inConfigMode()) { 
-
-              if (Serial) Serial.println("Creating message to send to Relay Node");
-              receivePayload.volume = dB;
-              receivePayload.rssi = 90;
-              receivePayload.battery = batt;
-              forwardToRelayNode();
-  
-          }
-  
-      }
-  
-      // Record when message sent
+    
+      // Record when message was acknowledged
       messageLastSent = millis();
-  
-    }
-  }
-}
+     
+        
+    } else {
+      if (Serial) Serial.println("No reply, is anyone listening?");
 
-void forwardToRelayNode() {
-
-  if (Serial) Serial.println("Data to forward");
-  if (Serial) Serial.println(receivePayload.volume);
-  if (Serial) Serial.println(receivePayload.rssi);
-  if (Serial) Serial.println(receivePayload.battery);
-  
-  if (radio.sendWithRetry(RELAYID, (const uint8_t*) &receivePayload, sizeof(receivePayload), retries, ackwait)) {
-      if (Serial)  Serial.println("ACK recieved (For TX to Relay)");
-      
-      // Response from relay
-      if (radio.DATALEN == sizeof(ChooseMePayload)) { 
-            chooseMePayload = *(ChooseMePayload*)radio.DATA;
-
-            // Possible Responses from Relay
-            // 101 - Not listening to you
-            // 102 - BLE not connected
-            // 103 - Invalid Payload
-            // 200 - OK
-
-            // Thanks
-            if (chooseMePayload.value == 200) {
-              // Sustain config mode because relay replied
-              if (Serial) { Serial.println("Relay Accepted Message"); }
-              configNoRelayTimeout = millis() + configNoRelayMaxTime;
-
-            // No thanks - not listening to you
-            } else {
-              configNoRelayTimeout = 0;
-              if (Serial) { Serial.print("Relay Rejected Message - "); Serial.println(chooseMePayload.value); }
-            } 
-              
-      } else {
-        if (Serial)  Serial.println("Invalid Payload recieved (For TX to Relay)");
+      // Now when we DONT see a reply forward the orignal packet without an to the relay node
+      if (inConfigMode()) {
+        forwardToRelay(txJson);
       }
+      
+    }
+
+  } else {
+    if (Serial) Serial.println("Sending failed (no ack)");
+
+    // Now when we DONT see a reply forward the orignal packet without an to the relay node
+    if (inConfigMode()) {
+      forwardToRelay(txJson);
+    }
+    
   }
 }
+
+//===================================================
+// Forward Packet to Relay
+//===================================================
+
+void forwardToRelay(JsonObject& json) {
+
+  if (Serial) Serial.print("Forwarding to Relay: ");
+  if (Serial) json.printTo(Serial);
+  if (Serial) Serial.println("");
+
+
+
+  float sendDB = max(0, min(100, 100 * ( ( float(json["v"]) - min_db) / (max_db - min_db) ) ));
+  float sendRSSI = 100 - max(0, min(100, 100 * ( ( float(json["r"]) - best_sig) / (worst_sig - best_sig) ) ));
+  float node_battery = float(json["b"]);
   
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& relayJson = jsonBuffer.createObject();
+  relayJson["t"] = "data";
+  relayJson["d"] = "d=" + String(NODEID) + "," + String(sendRSSI) + "," + String(sendDB) + ",";
+  relayJson["b"] = "b=" + String(NODEID) + "," + String(node_battery) + "," +  "0" + ",";
+  char radiopacket[RH_RF69_MAX_MESSAGE_LEN];
+  relayJson.printTo(radiopacket);
+
+  // Send
+  if (rf69_manager.sendtoWait((uint8_t *)radiopacket, strlen(radiopacket), RELAYID)) {
+    
+    // Response
+    uint8_t len = sizeof(radioBuffer);
+    uint8_t from;   
+    if (rf69_manager.recvfromAckTimeout(radioBuffer, &len, 2000, &from)) {
+      radioBuffer[len] = 0; // zero out remaining string
+
+      StaticJsonBuffer<200> jsonBuffer;
+      JsonObject& relayJson = jsonBuffer.parseObject((char*)radioBuffer);
+      if (relayJson.success()) {
+
+        if (Serial) Serial.print("RELAY REPLY: ");
+        if (Serial) relayJson.printTo(Serial);
+      
+        if (relayJson["msg"] != "OK") {
+          
+          endConfigMode(relayJson["msg"]);
+          configNoRelayTimeout = millis() + configNoRelayMaxTime;
+       
+        }
+
+      } else {
+        endConfigMode("Invalid JSON reply from relay");
+      }
+      
+    } else {
+      
+      endConfigMode("No reply, is the relay listening?");
+      
+    }
+    
+  } else {
+    
+    endConfigMode("Failed to send to Relay");
+    
+  }
+}
+
+
+
+
 //===================================================
 // Mode Control
 //===================================================
@@ -345,71 +383,80 @@ void startConfigMode() {
   configModeRequested = true;
   configModeAccepted = false;
 
-  if (radio.sendWithRetry(RELAYID, (const uint8_t*) &chooseMePayload, sizeof(chooseMePayload), 3, ackwait)) {
-      
-      // Response from relay
-      if (radio.DATALEN == sizeof(ChooseMePayload)) { 
-          chooseMePayload = *(ChooseMePayload*)radio.DATA;
+  StaticJsonBuffer<200> jsonBuffer;
+  JsonObject& txJson = jsonBuffer.createObject();
+  txJson["t"] = "chooseme";
+  if (Serial) {
+    Serial.print("To Relay: ");
+    txJson.prettyPrintTo(Serial);
+    Serial.println("");
+  }
+  
+  char radiopacket[RH_RF69_MAX_MESSAGE_LEN];
+  txJson.printTo(radiopacket);
 
-          if (Serial) Serial.println(chooseMePayload.value);
+  // Send a message
+  if (rf69_manager.sendtoWait((uint8_t *)radiopacket, strlen(radiopacket), RELAYID)) {
 
-          // We got accepted
-          if (chooseMePayload.value == 200) {
-            if (Serial) Serial.println("CHOOSEME - Got ACK");
-            setColor(0, 0, 255);
-            configModeAccepted = true;
-            buttonEnabled = true;
-            return;
+    // Response
+    uint8_t len = sizeof(radioBuffer);
+    uint8_t from;   
+    if (rf69_manager.recvfromAckTimeout(radioBuffer, &len, 2000, &from)) {
+      radioBuffer[len] = 0; // zero out remaining string
 
-          // No thanks
-          } else if (chooseMePayload.value < 200) {
-            if (Serial) { Serial.print("CHOOSEME Rejected - "); Serial.println(chooseMePayload.value); }
-            endConfigMode(chooseMePayload.value);
-            return;
-          }
+      StaticJsonBuffer<200> jsonBuffer;
+      JsonObject& relayReplyJson = jsonBuffer.parseObject((char*)radioBuffer);
+      if (relayReplyJson.success()) {
+
+        if (Serial) {
+          relayReplyJson.prettyPrintTo(Serial);
+          Serial.println("");
+        }
+        
+        if (relayReplyJson["msg"] != "OK") {
           
+          endConfigMode(relayReplyJson["msg"]);
+          
+        } else {
+          
+          if (Serial) Serial.println("All OK");
+          configModeAccepted = true;
+          setColor(0, 0, 255);
+          buttonEnabled = true;
+          
+        }
+        
       } else {
-        if (Serial)  Serial.println("CHOOSEME - Invalid chooseMePayload response");
-        endConfigMode(1);
+        endConfigMode("Invalid JSON CHOOSEME reply from Relay");
       }
-      
-    } else {
-        if (Serial)  Serial.println("CHOOSEME - NO ACK recieved (For TX to Relay)");
-//        radio.sleep();
-//        delay(50);
-        endConfigMode(1);
-    }    
     
- }
+    } else {
+      endConfigMode("No ACK from relay - CHOOSEME request");
+    }
+    
+  } else {
+    endConfigMode("Failed to send CHOOSEME to Relay");
+  }
+  
+}
 
 
 
-void endConfigMode(int code) {
+
+void endConfigMode(String reason) {
+
   configModeRequested = false;
   configModeAccepted = false;
   configNoRelayTimeout = 0;
   configChooseMeTimeout = 0;
-  if (Serial) { Serial.print("Exiting config mode - code: "); Serial.println(code);  }
   
-  switch (code) {
-    case 0:    // Button press to exit
-      if (Serial) { Serial.println("Button Press - Connection to Relay terminated"); }
-      setColor(0, 0, 0);
-      break;
-    case 1:    // Time out
-      if (Serial) { Serial.println("Time Out - Connection to Relay failed"); }
-      setColor(255, 0, 0);
-      break;
-    case 101:  // Relay I'm not listening to you
-      if (Serial) { Serial.println("Not listening to you anymore - Connection to Relay terminated"); }
-      setColor(255, 0, 255);
-      break;
-    case 102:    // Relay I'm not connected to BLE
-      if (Serial) { Serial.println("No BLE Tablet - Connection to Relay terminated"); }
-      setColor(0, 0, 255);
-      break;
+  if (Serial) {
+    Serial.print("Exiting config mode - reason: ");
+    Serial.println(reason);
   }
-  delay(500);  
+
+  setColor(255, 0, 0);
+  delay(500);
   buttonEnabled = true;
   setColor(0, 0, 0);
 }
@@ -449,12 +496,11 @@ void setColor(int red, int green, int blue) {
 //===================================================
 
 float getBatteryLevel() {
-  if (Serial) Serial.println("Getting battery voltage");
   float measuredvbat = analogRead(VBATPIN);
   measuredvbat *= 2;    // we divided by 2, so multiply back
   measuredvbat *= 3.3;  // Multiply by 3.3V, our reference voltage
   measuredvbat /= 1024; // convert to voltage
-  return measuredvbat * 10;
+  return measuredvbat;
 }
 
 //===================================================
@@ -495,8 +541,9 @@ void printDebugInfo() {
   Serial.println("Encryption: Disabled");
 #endif
   char buff[50];
-  sprintf(buff, "\nListening at %d Mhz...", FREQUENCY == RF69_433MHZ ? 433 : FREQUENCY == RF69_868MHZ ? 868 : 915);
-  Serial.println(buff);
+  Serial.print("\nListening to ");
+  Serial.print(FREQUENCY);
+  Serial.println(" Mhz");
 }
 
 
@@ -517,7 +564,6 @@ int getSample() {
     } else {
       sampleFailureCount++;
     }
-
     return 0;
   }
 
@@ -558,9 +604,9 @@ bool inConfigMode() {
 }
 
 bool isTimeToSend() {
- if (!configModeRequested && millis() > messageLastSent + sendIntervalNormalMode) return true;
- if (configModeRequested && millis() > messageLastSent + sendIntervalConfigMode) return true;
- return false;
+  if (!configModeRequested && millis() > messageLastSent + sendIntervalNormalMode) return true;
+  if (configModeRequested && millis() > messageLastSent + sendIntervalConfigMode) return true;
+  return false;
 }
 
 

@@ -5,11 +5,11 @@
 //
 // **********************************************************************************
 
-#include <RFM69.h>              // https://www.github.com/lowpowerlab/rfm69
-#include <RFM69_ATC.h>          // https://www.github.com/lowpowerlab/rfm69
-#include <SPI.h>                // Included with Arduino IDE
-#include <ArduinoJson.h>        // https://arduinojson.org/d
-#include <Adafruit_SleepyDog.h> // https://github.com/adafruit/Adafruit_SleepyDog
+#include <SPI.h>
+#include <RH_RF69.h>
+#include <RHReliableDatagram.h>
+#include <ArduinoJson.h>
+
 #include "Adafruit_BLE.h"
 #include "Adafruit_BluefruitLE_SPI.h"
 #include "Adafruit_BluefruitLE_UART.h"
@@ -25,22 +25,16 @@ bool DEBUG = true;  // Show debug messages
 #define USING_RFM69_WING
 
 // The transmision frequency of the baord. Change as needed.
-#define FREQUENCY      RF69_433MHZ //RF69_868MHZ // RF69_915MHZ
+#define FREQUENCY      433.0 
 
 // Uncomment if this board is the RFM69HW/HCW not the RFM69W/CW
-#define IS_RFM69HW_HCW
+#define IS_RFM69HW_HCW true
 
 // Serial board rate - just used to print debug messages
 #define SERIAL_BAUD   115200
 
 // Battery pin
 #define VBATPIN A7
-
-// Conversion to percentage
-float min_db = 35; // Background level
-float max_db = 90; // Everything above this is 100%
-float worst_sig = abs(-90);
-float best_sig  = abs(-25);
 
 // **********************************************************************************
 // **********************************************************************************
@@ -73,8 +67,12 @@ float best_sig  = abs(-25);
 #define RF69_IRQ_NUM  3
 #endif
 
-
-RFM69 radio(RF69_SPI_CS, RF69_IRQ_PIN, false, RF69_IRQ_NUM);
+// Singleton instance of the radio driver
+RH_RF69 rf69(RF69_SPI_CS, RF69_IRQ_PIN);
+// Class to manage message delivery and receipt, using the driver declared above
+RHReliableDatagram rf69_manager(rf69, NODEID);
+// Dont put this on the stack:
+uint8_t radioBuffer[RH_RF69_MAX_MESSAGE_LEN];
 
 #define FACTORYRESET_ENABLE         1
 #define MINIMUM_FIRMWARE_VERSION    "0.6.6"
@@ -85,28 +83,6 @@ Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_
 int listening_to_node = 0;
 float this_battery = 0;
 
-// Define payloads
-typedef struct {
-  uint8_t volume;  // Volume
-  uint8_t battery; // Battery voltage
-  uint8_t rssi;    // rssi
-} Payload;
-Payload payload;
-
-typedef struct {
-  uint8_t value;  // Volume
-} ChooseMePayload;
-ChooseMePayload chooseMePayload;
-
-// Define struct for update payload
-typedef struct {
-  char key[20]; // command
-  uint8_t value; // Battery voltage
-} Update;
-Update upd;
-
-
-
 //===================================================
 // Setup
 //===================================================
@@ -115,37 +91,37 @@ void setup() {
 
   //  Wait for Serial if we are in debug
   if (DEBUG) {
-    //setColor(255,255,255);
     unsigned long serial_timeout = millis() + 10000;
     Serial.begin(SERIAL_BAUD);
     while (!Serial && millis() < serial_timeout) {
       delay(100);
     }
-    //setColor(0,0,0);
   }
 
   // Init BLE
   initBLE();
 
   // Reset the radio
-  resetRadio();
+  // resetRadio();
 
   // Initialize the radio
-  radio.initialize(FREQUENCY, NODEID, NETWORKID);
-  #ifdef IS_RFM69HW_HCW
-    radio.setHighPower(); //must include this only for RFM69HW/HCW!
-  #endif
-  #ifdef ENCRYPTKEY
-    radio.encrypt(ENCRYPTKEY);
-  #endif
-  
+  if (!rf69_manager.init()) {
+    Serial.println("RFM69 radio init failed");
+    while (1);
+  }
+  if (!rf69.setFrequency(FREQUENCY)) {
+    Serial.println("setFrequency failed");
+    while (1);
+  }
+  rf69.setTxPower(20, IS_RFM69HW_HCW);  // range from 14-20 for power, 2nd arg must be true for 69HCW
+  // The encryption key has to be the same as the one in the server
+  uint8_t key[] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+  rf69.setEncryptionKey(key);  
   if (Serial) Serial.println("Radio Initialised");
   
-  // Debug
-  if (DEBUG) printDebugInfo();
-
   // Init battery
-  this_battery = getBatteryLevel();
+  this_battery = 0; //getBatteryLevel();
 
 }
 
@@ -153,92 +129,81 @@ void setup() {
 // Main loop
 //===================================================
 
-// Responses
-// 101 - Not listening to you
-// 102 - BLE not connected
-// 103 - Invalid Payload
-// 200 - OK
-
 void loop() {
   
-  if (radio.receiveDone()) {
+  if (rf69_manager.available()) {
 
-    if (Serial) { Serial.print("Message received from node: "); Serial.println(radio.SENDERID); }
-    
-    // Choose me
-    if (radio.DATALEN == sizeof(ChooseMePayload)) {
-      
-      if (Serial) Serial.println("its CHOOSEME");
-      
-      listening_to_node = 1 * radio.SENDERID;
-      if (Serial) { Serial.print("Listening now to node: "); Serial.println(listening_to_node); }
-      
-      if (radio.ACKRequested()) {
-        chooseMePayload.value = getResponseCode();
-        radio.sendACK((const uint8_t*) &chooseMePayload, sizeof(chooseMePayload));
-        if (Serial) Serial.println(" - ACK sent.");
-      }
+    uint8_t len = sizeof(radioBuffer);
+    uint8_t from;
+    if (rf69_manager.recvfromAck(radioBuffer, &len, &from)) {
+        if (Serial) { Serial.print("Message received from node: "); Serial.println(from); }
 
-      // Actual data
-    } else if (radio.DATALEN == sizeof(Payload)) {
-
-      if (Serial) Serial.println("its DATA");
-
-      int sender = radio.SENDERID;
-      payload = *(Payload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
-      
-      if (radio.ACKRequested()) {
-        chooseMePayload.value = getResponseCode();
-        radio.sendACK((const uint8_t*) &chooseMePayload, sizeof(chooseMePayload));
-        if (Serial) Serial.println(" - ACK sent.");
-      }
-      
-      // Send to BLE if we are listening to this node
-      if (listening_to_node == sender) sendPayloadToBLE(sender, this_battery);
-      
-      this_battery = getBatteryLevel();
-
-    
-    // Unknown struct
-    } else {
-      if (Serial) Serial.println("Its an invalid payload");
-      if (radio.ACKRequested()) {
-        chooseMePayload.value = 103;
-        radio.sendACK((const uint8_t*) &chooseMePayload, sizeof(chooseMePayload));
-        if (Serial) Serial.println(" - ACK sent.");
-      }
+        // Is it valid JSON    
+        StaticJsonBuffer<200> jsonBuffer;
+        JsonObject& root = jsonBuffer.parseObject((char*)radioBuffer);
+        if (root.success()) {
+          processMessage(root, from);
+        } else {
+          Serial.println("Invalid JSON:");
+          Serial.println((char*)radioBuffer); 
+        }
     }
-
   }
 }
 
-int getResponseCode() {
-  if (!ble.isConnected()) return 102;
-  if (listening_to_node == radio.SENDERID) return 200;
-  return 101;
-}
-
-void sendPayloadToBLE(int sender, float this_battery) {
-
-  if (Serial) Serial.print("Volume: ");  Serial.println(payload.volume);
-  if (Serial) Serial.print("RSSI: "); Serial.println(payload.rssi);
-  if (Serial) Serial.print("Battery: "); Serial.println(payload.battery);
+void processMessage(JsonObject& json, int sender) {
   
-  float sendDB = max(0, min(100, 100 * ( (payload.volume - min_db) / (max_db - min_db) ) ));
-  float sendRSSI = 100 - max(0, min(100, 100 * ( (payload.rssi - best_sig) / (worst_sig - best_sig) ) ));
-  float node_battery = float(payload.battery) / 10.0;
-  String d = "d=" + String(sender) + "," + String(sendRSSI) + "," + String(sendDB) + ",";
-  String b = "b=" + String(sender) + "," + String(node_battery) + "," +  String(this_battery) + ",";
-  // Send input data to host via Bluefruit
-  if (Serial) Serial.println(d);
-  if (Serial) Serial.println(b);
-  if (ble.isConnected()) {
-    ble.print(d);
-    delay(50);
-    ble.print(b);
-    if (Serial) Serial.println("Sent via BLE");
+  if (Serial) {
+    json.printTo(Serial);
+    Serial.println("");
   }
+
+  StaticJsonBuffer<100> jsonBuffer;
+  JsonObject& replyJson = jsonBuffer.createObject();
+  replyJson["msg"] = "Unknown";
+
+  // Process
+  if (!ble.isConnected()) { 
+    replyJson["msg"] = "BLE Not Connected";
+    
+  } else if (json["t"] == "chooseme") {
+    listening_to_node = sender;
+    replyJson["msg"] = "OK";
+    
+  } else if (json["t"] == "data" && sender != listening_to_node) {
+    replyJson["msg"] = "Not Listening";
+      
+  } else if (json["t"] == "data" && sender == listening_to_node) {
+
+     if (Serial) Serial.print("To BLE");
+     json.printTo(Serial);
+        
+      // Send input data to host via Bluefruit       
+      ble.print(json["d"].as<String>());
+      delay(50);
+      ble.print(json["b"].as<String>());
+      replyJson["msg"] = "OK";
+            
+  } else {
+     replyJson["msg"] = "Unknown Type";
+  }
+    
+  // Send reply  
+  if (Serial) {
+    Serial.print("To Node: ");
+    replyJson.prettyPrintTo(Serial);
+    Serial.println("");
+  }
+  
+  char radiopacket[RH_RF69_MAX_MESSAGE_LEN];
+  replyJson.printTo(radiopacket);
+  // Send a message
+  if (rf69_manager.sendtoWait((uint8_t *)radiopacket, strlen(radiopacket), sender)) {
+
+  } 
+     
 }
+
 
 //===================================================
 // Reset Radio
@@ -256,92 +221,8 @@ void resetRadio() {
 }
 
 //===================================================
-// Debug Message
-//===================================================
-
-// Print Info
-void printDebugInfo() {
-  if (!Serial) return;
-  Serial.println("------------------------------------");
-  Serial.println("------------ RELAY NODE ------------");
-  Serial.println("------------------------------------");
-  Serial.print("I am node: "); Serial.println(NODEID);
-  Serial.print("on network: "); Serial.println(NETWORKID);
-  Serial.println("I am a relay");
-
-#if defined (__AVR_ATmega32U4__)
-  Serial.println("AVR ATmega 32U4");
-#else
-  Serial.println("SAMD FEATHER M0");
-#endif
-#ifdef USING_RFM69_WING
-  Serial.println("Using RFM69 Wing: YES");
-#else
-  Serial.println("Using RFM69 Wing: NO");
-#endif
-  Serial.print("RF69_SPI_CS: "); Serial.println(RF69_SPI_CS);
-  Serial.print("RF69_IRQ_PIN: "); Serial.println(RF69_IRQ_PIN);
-  Serial.print("RF69_IRQ_NUM: "); Serial.println(RF69_IRQ_NUM);
-#ifdef ENABLE_ATC
-  Serial.println("RFM69 Auto Transmission Control: Enabled");
-#else
-  Serial.println("RFM69 Auto Transmission Control: Disabled");
-#endif
-#ifdef ENCRYPTKEY
-  Serial.println("Encryption: Enabled");
-#else
-  Serial.println("Encryption: Disabled");
-#endif
-  char buff[50];
-  sprintf(buff, "\nListening at %d Mhz...", FREQUENCY == RF69_433MHZ ? 433 : FREQUENCY == RF69_868MHZ ? 868 : 915);
-  Serial.println(buff);
-}
-
-//===================================================
-// Split String
-//===================================================
-
-String getValue(String data, char separator, int index) {
-  int found = 0;
-  int strIndex[] = {0, -1};
-  int maxIndex = data.length() - 1;
-  for (int i = 0; i <= maxIndex && found <= index; i++) {
-    if (data.charAt(i) == separator || i == maxIndex) {
-      found++;
-      strIndex[0] = strIndex[1] + 1;
-      strIndex[1] = (i == maxIndex) ? i + 1 : i;
-    }
-  }
-  return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
-}
-
-//===================================================
 // BLE
 //===================================================
-
-void listenToBLE() {
-  String key = "";
-  bool msgToSend = false;
-  while ( ble.available() ) {
-    msgToSend = true;
-    int c = ble.read();
-    key.concat(char(c));
-  }
-  if (msgToSend) {
-    if (Serial) {
-      Serial.println(String(key));
-    }
-
-    key.toCharArray(upd.key, sizeof(key));
-
-    if (radio.sendWithRetry(3, (const void*) &upd, sizeof(upd), 3, 500)) {
-      if (Serial) Serial.println(" Acknoledgment received!");
-    } else {
-      if (Serial) Serial.println(" No Acknoledgment after retries");
-    }
-  }
-}
-
 
 void initBLE() {
   if (Serial) Serial.print(F("Initialising the Bluefruit LE module: "));
@@ -375,11 +256,11 @@ void initBLE() {
 // Battery
 //===================================================
 
-float getBatteryLevel() {
-  //  if (Serial) Serial.println("Getting battery voltage");
-  float measuredvbat = analogRead(VBATPIN);
-  measuredvbat *= 2;    // we divided by 2, so multiply back
-  measuredvbat *= 3.3;  // Multiply by 3.3V, our reference voltage
-  measuredvbat /= 1024; // convert to voltage
-  return measuredvbat;
-}
+//float getBatteryLevel() {
+//  //  if (Serial) Serial.println("Getting battery voltage");
+//  float measuredvbat = analogRead(VBATPIN);
+//  measuredvbat *= 2;    // we divided by 2, so multiply back
+//  measuredvbat *= 3.3;  // Multiply by 3.3V, our reference voltage
+//  measuredvbat /= 1024; // convert to voltage
+//  return measuredvbat;
+//}

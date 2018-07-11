@@ -5,26 +5,24 @@
 //
 // **********************************************************************************
 
-#include <RFM69.h>              // https://www.github.com/lowpowerlab/rfm69
-#include <RFM69_ATC.h>          // https://www.github.com/lowpowerlab/rfm69
-#include <SPI.h>                // Included with Arduino IDE
-#include <ArduinoJson.h>        // https://arduinojson.org/d
-#include <Adafruit_SleepyDog.h> // https://github.com/adafruit/Adafruit_SleepyDog
+#include <SPI.h>
+#include <RH_RF69.h>
+#include <RHReliableDatagram.h>
+#include <ArduinoJson.h>
 
 bool DEBUG = true;  // Show debug messages
 
 // Node and network config
 #define NODEID        100   // The ID of this node)
-#define NETWORKID     20   // The network ID
 
 // Are you using the RFM69 Wing? Uncomment if you are.
 // #define USING_RFM69_WING
 
 // The transmision frequency of the baord.
-#define FREQUENCY      RF69_433MHZ
+#define FREQUENCY      433.0
 
 // Uncomment if this board is the RFM69HW/HCW not the RFM69W/CW
-#define IS_RFM69HW_HCW
+#define IS_RFM69HW_HCW true
 
 // Serial board rate - just used to print debug messages
 #define SERIAL_BAUD   115200
@@ -60,21 +58,12 @@ bool DEBUG = true;  // Show debug messages
 #define RF69_IRQ_NUM  3
 #endif
 
-RFM69 radio(RF69_SPI_CS, RF69_IRQ_PIN, false, RF69_IRQ_NUM);
-
-// Define payloads
-typedef struct {
-  uint8_t volume;  // Volume
-  uint8_t battery; // Battery voltage
-} RXPayload;
-RXPayload receivePayload;
-
-typedef struct {
-  uint8_t volume; // Volume
-  uint8_t battery; // Battery voltage
-  uint8_t rssi;    // rssi
-} TXPayload;
-TXPayload sendPayload;
+// Singleton instance of the radio driver
+RH_RF69 rf69(RF69_SPI_CS, RF69_IRQ_PIN);
+// Class to manage message delivery and receipt, using the driver declared above
+RHReliableDatagram rf69_manager(rf69, NODEID);
+// Dont put this on the stack:
+uint8_t radioBuffer[RH_RF69_MAX_MESSAGE_LEN];
 
 //===================================================
 // Setup
@@ -87,15 +76,23 @@ void setup() {
     delay(100);
   }
 
-  // Reset the radio
-  resetRadio();
-
   // Initialize the radio
-  radio.initialize(FREQUENCY, NODEID, NETWORKID);
-  #ifdef IS_RFM69HW_HCW
-    radio.setHighPower(); //must include this only for RFM69HW/HCW!
-  #endif
+  if (!rf69_manager.init()) {
+    Serial.println("RFM69 radio init failed");
+    while (1);
+  }
+  if (!rf69.setFrequency(FREQUENCY)) {
+    Serial.println("setFrequency failed");
+    while (1);
+  }
 
+  rf69.setTxPower(20, IS_RFM69HW_HCW);  // range from 14-20 for power, 2nd arg must be true for 69HCW
+
+  // The encryption key has to be the same as the one in the server
+  uint8_t key[] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+  rf69.setEncryptionKey(key);
+  
   // Debug
   if (DEBUG) printDebugInfo();
 
@@ -105,44 +102,40 @@ void setup() {
 // Main loop
 //======================================================================================================
 
+
 void loop() {
 
-  if (radio.receiveDone()) {
-    if (radio.DATALEN != sizeof(RXPayload)) {
-      if (DEBUG) Serial.println("# Invalid payload received, not matching Payload struct. -- ");
-    } else {
-      receivePayload = *(RXPayload*)radio.DATA; //assume radio.DATA actually contains our struct and not something else
+   if (rf69_manager.available()) {
+    
+      uint8_t len = sizeof(radioBuffer);
+      uint8_t from;
+      if (rf69_manager.recvfromAck(radioBuffer, &len, &from)) {
+        if (DEBUG) Serial.print("# Got packet from #"); Serial.println(from);
+        //Serial.print(rf69.lastRssi());
+        
+        // Is it valid JSON    
+        StaticJsonBuffer<200> jsonBuffer;
+        JsonObject& root = jsonBuffer.parseObject((char*)radioBuffer);
+        if (root.success()) {
+          root.printTo(Serial);
+          Serial.println("");
 
-      if (radio.ACKRequested()) {
-          if (DEBUG) Serial.println("- ACK sent with RSSI info");
-          sendPayload.volume = receivePayload.volume;
-          sendPayload.battery = receivePayload.battery;
-          sendPayload.rssi = abs(radio.RSSI);
-          // Cant use retry as the is an issue with forwarding and sending acks
-          radio.sendACK((const uint8_t*) &sendPayload, sizeof(sendPayload));
+          // Send Ack - Only for valid messages
+          char radiopacket[RH_RF69_MAX_MESSAGE_LEN];
+          root["r"] = abs(rf69.lastRssi());
+          root.printTo(radiopacket);
+          
+          if (!rf69_manager.sendtoWait((uint8_t *)radiopacket, strlen(radiopacket), from)) {
+            Serial.println("Sending failed (no ack)");
+          } 
+          
+        } else {
+          Serial.println("Invalid JSON:");
+          Serial.println((char*)radioBuffer); 
+          
+        }
       }
-
-      // Send to BLE
-      sendPayloadToSerial(radio.SENDERID, radio.RSSI);
-      
-    }
-  }
-}
-
-//===================================================
-// Send Payload To Serial
-//===================================================
-
-void sendPayloadToSerial(int sender, int rssi) {
-  StaticJsonBuffer<200> jsonBuffer;
-  JsonObject& root = jsonBuffer.createObject();
-  root["sender"] = sender;
-  root["rssi"]   = rssi;
-  root["pay_volume"]  = receivePayload.volume;
-  root["pay_battery"] = float(receivePayload.battery) / 10.0;
-  root.printTo(Serial);
-  Serial.println();
-  delay(250);
+   }
 }
 
 //===================================================
@@ -171,7 +164,6 @@ void printDebugInfo() {
   Serial.println("------------ SERVER NODE ------------");
   Serial.println("-------------------------------------");
   Serial.print("I am node: "); Serial.println(NODEID);
-  Serial.print("on network: "); Serial.println(NETWORKID);
   Serial.println("I am a relay");
 
 #if defined (__AVR_ATmega32U4__)
@@ -198,25 +190,7 @@ void printDebugInfo() {
   Serial.println("Encryption: Disabled");
 #endif
   char buff[50];
-  sprintf(buff, "\nListening at %d Mhz...", FREQUENCY == RF69_433MHZ ? 433 : FREQUENCY == RF69_868MHZ ? 868 : 915);
+  //sprintf(buff, "\nListening at %d Mhz...", FREQUENCY);
   Serial.println(buff);
-}
-
-//===================================================
-// Split String
-//===================================================
-
-String getValue(String data, char separator, int index) {
-  int found = 0;
-  int strIndex[] = {0, -1};
-  int maxIndex = data.length() - 1;
-  for (int i = 0; i <= maxIndex && found <= index; i++) {
-    if (data.charAt(i) == separator || i == maxIndex) {
-      found++;
-      strIndex[0] = strIndex[1] + 1;
-      strIndex[1] = (i == maxIndex) ? i + 1 : i;
-    }
-  }
-  return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
 }
 
