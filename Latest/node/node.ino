@@ -11,7 +11,7 @@
 
 // **********************************************************************************
 
-#define NODEID        17   // This device's ID
+#define NODEID        18  // This device's ID
 #define BASEID        100 // Basestation (PI node)
 #define RELAYID       101 // The ID of the RFM69 to BLE Relay node
 #define NETWORKID     20
@@ -33,7 +33,7 @@
 // Battery pin
 #define VBATPIN A7
 
-bool DEBUG = true;  // Show debug messages
+bool DEBUG = false;  // Show debug messages
 
 // How long to stay in config mode after the last acknowlegement
 unsigned long configNoRelayMaxTime = 1000 * 20; // 60 secs
@@ -46,7 +46,7 @@ unsigned long maxTimeInConfigMode = 1000 * 60 * 5; // 2 minutes
 
 // Send interval
 int sendIntervalNormalMode = 8000; // ms in normal mode
-int sendIntervalConfigMode = 500;//125 // ms in config mode
+int sendIntervalConfigMode = 250;//125 // ms in config mode
 
 // LED Pins
 #define LED_PIN_R 5
@@ -57,8 +57,9 @@ int sendIntervalConfigMode = 500;//125 // ms in config mode
 int configButton = A3;
 
 int retries = 2;
-int ackwait = 300;
-
+int ackwait = 200;
+int lostSignalCount = 0;
+int ledStrength = 500;
 // **********************************************************************************
 // **********************************************************************************
 //
@@ -95,9 +96,6 @@ RH_RF69 rf69(RF69_SPI_CS, RF69_IRQ_PIN);
 
 // Class to manage message delivery and receipt, using the driver declared above
 RHReliableDatagram rf69_manager(rf69, NODEID);
-
-int16_t packetnum = 0;  // packet counter, we increment per xmission
-
 
 // Audio
 #define ADC_SOUND_REF 65
@@ -140,8 +138,6 @@ bool configModeRequested = false;
 bool configModeAccepted = false;
 bool buttonEnabled = true;
 
-
-
 uint8_t buf[RH_RF69_MAX_MESSAGE_LEN];
 uint8_t data[] = "  OK";
 //======================================================================================================
@@ -151,17 +147,17 @@ uint8_t data[] = "  OK";
 void setup() {
 
   if (DEBUG) {
-    setColor(255, 0, 0);
+    setColor(ledStrength, 0, 0);
     delay(500);
-    setColor(0, 255, 0);
+    setColor(0, ledStrength, 0);
     delay(500);
-    setColor(0, 0, 255);
+    setColor(0, 0, ledStrength);
     delay(500);
   }
   
-  //  Wait for Serial if we are in debug
+  //  Wait 10s for Serial if we are in debug
   if (DEBUG) {
-    setColor(255, 255, 255);
+    setColor(ledStrength, ledStrength, ledStrength);
     unsigned long serial_timeout = millis() + 10000;
     Serial.begin(SERIAL_BAUD);
     while (!Serial && millis() < serial_timeout) {
@@ -270,8 +266,7 @@ void loop() {
       sendPayload.volume  = dB;
   
       if (Serial) { 
-        Serial.println(inConfigMode());
-   
+        Serial.println(inConfigMode());   
         Serial.print("Sending");
         Serial.print(" | Vol dB: "); Serial.print(sendPayload.volume);
         Serial.print(" | Bat: "); Serial.println(sendPayload.battery);
@@ -282,7 +277,7 @@ void loop() {
          // Now wait for a reply from the server
         uint8_t len = sizeof(buf);
         uint8_t from;   
-        if (rf69_manager.recvfromAckTimeout(buf, &len, 2000, &from)) {
+        if (rf69_manager.recvfromAckTimeout(buf, &len, ackwait, &from)) {
           buf[len] = 0; // zero out remaining string
            if (Serial)  Serial.println("--- ACK recieved (For TX to Base)");
           //
@@ -299,18 +294,26 @@ void loop() {
         } 
       } else {
           if (Serial)  Serial.println("--- NO ACK recieved (For TX to Base)");
-          
+          lostSignalCount++;
           //
           // NO RESPONSE RECEIVED FROM BASE STATION
           //
+          if (lostSignalCount > 2) { // only send the data if no ack three times
+            if (Serial) Serial.println("No signal from base three times"); ///!! fix
+
+            receivePayload.volume = dB;
+            receivePayload.rssi = 90;
+            receivePayload.battery = batt;
+            lostSignalCount = 0;
+          }
+          else {
+             receivePayload.volume = dB;
+          }
           
           // Forward this data to the BLE node
           if (inConfigMode()) { 
 
               if (Serial) Serial.println("Creating message to send to Relay Node");
-              receivePayload.volume = dB;
-              receivePayload.rssi = 90;
-              receivePayload.battery = batt;
               forwardToRelayNode();
           }
         }
@@ -330,7 +333,7 @@ void forwardToRelayNode() {
   if (rf69_manager.sendtoWait((uint8_t *)&receivePayload, sizeof(receivePayload), RELAYID)){
      uint8_t len = sizeof(buf);
     uint8_t from;   
-    if (rf69_manager.recvfromAckTimeout(buf, &len, 2000, &from)) {
+    if (rf69_manager.recvfromAckTimeout(buf, &len, ackwait, &from)) {
       if (Serial)  Serial.println("ACK recieved (For TX to Relay)");
       
       // Response from relay
@@ -348,7 +351,6 @@ void forwardToRelayNode() {
               configNoRelayTimeout = 0;
               if (Serial) { Serial.print("Relay Rejected Message - "); Serial.println(chooseMePayload.value); }
             }
-              
       } else {
         if (Serial)  Serial.println("Invalid Payload recieved (For TX to Relay)");
       }
@@ -368,10 +370,11 @@ void startConfigMode() {
   configModeAccepted = false;
   
   if (rf69_manager.sendtoWait((uint8_t *)&chooseMePayload, sizeof(chooseMePayload), RELAYID)) {
+    if (Serial) Serial.println("Sending request to relay");
     // Now wait for a reply from the server
     uint8_t len = sizeof(buf);
     uint8_t from;   
-    if (rf69_manager.recvfromAckTimeout(buf, &len, 400, &from)) {
+    if (rf69_manager.recvfromAckTimeout(buf, &len, ackwait, &from)) {
       buf[len] = 0; // zero out remaining string
       // Response from relay
       if (buf[0] == chooseMePayload.id) { 
@@ -402,10 +405,14 @@ void startConfigMode() {
         delay(50);
         endConfigMode(1);
     }    
- }
+  }
+  else {
+    if (Serial)  Serial.println("CHOOSEME - Send Failed  (For TX to Relay)");
+    rf69.sleep();
+    delay(50);
+    endConfigMode(1);
+  }
 }
-
-
 
 void endConfigMode(int code) {
   configModeRequested = false;
@@ -421,15 +428,15 @@ void endConfigMode(int code) {
       break;
     case 1:    // Time out
       if (Serial) { Serial.println("Time Out - Connection to Relay failed"); }
-      setColor(255, 0, 0);
+      setColor(ledStrength, 0, 0);
       break;
     case 101:  // Relay I'm not listening to you
       if (Serial) { Serial.println("Not listening to you anymore - Connection to Relay terminated"); }
-      setColor(255, 0, 255);
+      setColor(ledStrength, 0, ledStrength);
       break;
     case 102:    // Relay I'm not connected to BLE
       if (Serial) { Serial.println("No BLE Tablet - Connection to Relay terminated"); }
-      setColor(0, 0, 255);
+      setColor(0, 0, ledStrength);
       break;
   }
   delay(500);  
